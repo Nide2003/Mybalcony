@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 import urllib.parse
 
 import httpx
@@ -24,7 +25,10 @@ from mybalcony.core.config import cfg
 from mybalcony.services import catalog
 
 API = "https://music.163.com/api"
+LRCLIB = "https://lrclib.net/api"
 HEADERS = {"Referer": "https://music.163.com/", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+# 网络失败后多久允许重试（确认"没有歌词"的结果仍整次运行缓存，不受这个影响）
+FAIL_COOLDOWN = 60.0
 _CREATE_NO_WINDOW = 0x08000000      # 调 curl 时不要弹黑框
 _TS = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 # 开头的制作信息（作词 / 作曲 / 编曲 …）不当作歌词显示
@@ -139,6 +143,7 @@ class LyricsService(QtCore.QObject):
         self._client = httpx.Client(timeout=httpx.Timeout(8.0, connect=4.0), headers=HEADERS)
         self._cache: dict[str, Lyrics | None] = {}
         self._pending: set[str] = set()
+        self._fail_at: dict[str, float] = {}
         self._lock = threading.Lock()
 
     @staticmethod
@@ -157,9 +162,12 @@ class LyricsService(QtCore.QObject):
                 return self._cache[k]
             if k in self._pending:
                 return None
+            if k in self._fail_at and time.monotonic() - self._fail_at[k] < FAIL_COOLDOWN:
+                return None            # 刚网络失败过：冷却期内不重复打请求
             self._pending.add(k)
+            self._fail_at.pop(k, None)
         run_bg(self._fetch, dict(m), on_done=lambda res, k=k: self._done(k, res),
-               on_error=lambda e, k=k: self._done(k, None))
+               on_error=lambda e, k=k: self._fail(k))
         return None
 
     def _done(self, k: str, res):
@@ -169,6 +177,12 @@ class LyricsService(QtCore.QObject):
             if len(self._cache) > 200:
                 self._cache.pop(next(iter(self._cache)))
         self.ready.emit(k)
+
+    def _fail(self, k: str):
+        """网络/解析异常：不写进永久缓存，只记冷却时间，过一会儿还能自动重试。"""
+        with self._lock:
+            self._pending.discard(k)
+            self._fail_at[k] = time.monotonic()
 
     # ---------------- 网络 ----------------
     def _json(self, url: str, params: dict):
@@ -181,6 +195,9 @@ class LyricsService(QtCore.QObject):
             return _curl_json(url, params)
 
     def _fetch(self, m: dict) -> Lyrics | None:
+        return self._fetch_netease(m) or self._fetch_lrclib(m)
+
+    def _fetch_netease(self, m: dict) -> Lyrics | None:
         sid = str(m.get("song_id") or "") or self._search(m)
         if not sid:
             return None
@@ -191,6 +208,53 @@ class LyricsService(QtCore.QObject):
         trans = parse_lrc((j.get("tlyric") or {}).get("lyric", ""))
         lyr = Lyrics(lines, trans)
         return lyr if lyr else None
+
+    def _lrclib_json(self, path: str, params: dict):
+        """LRCLIB 要求 UA 标明应用；404 当作"没这首"而不是网络错误。"""
+        url = LRCLIB + path
+        try:
+            r = self._client.get(url, params=params,
+                                 headers={"User-Agent": "Wisland (desktop lyrics widget)"})
+            if r.status_code == 404:
+                return None
+            r.raise_for_status()
+            return r.json()
+        except Exception:  # noqa: BLE001
+            res = _curl_json(url, params)
+            if res is None:
+                raise           # httpx 与 curl 都失败：是网络故障，交给上层走冷却重试
+            return res
+
+    def _fetch_lrclib(self, m: dict) -> Lyrics | None:
+        """网易云没兜住时查 LRCLIB：免费公开、带同步时间轴，欧美/小众曲库更全。"""
+        core = title_core(m.get("title") or "")
+        if not core:
+            return None
+        artist = primary_artist(m.get("artist"))
+        dur = float(m.get("duration") or 0)
+        exact = {"track_name": core}
+        if artist:
+            exact["artist_name"] = artist
+        if m.get("album"):
+            exact["album_name"] = m["album"]
+        if dur > 0:
+            exact["duration"] = int(round(dur))
+        rec = self._lrclib_json("/get", exact)
+        if not (isinstance(rec, dict) and rec.get("syncedLyrics")):
+            q = {"track_name": core}
+            if artist:
+                q["artist_name"] = artist
+            rows = self._lrclib_json("/search", q)
+            if not isinstance(rows, list):
+                return None
+            rows = [r for r in rows if r.get("syncedLyrics")]
+            if dur > 0:
+                rows.sort(key=lambda r: abs(float(r.get("duration") or 0) - dur))
+            rec = rows[0] if rows else None
+        if not rec:
+            return None
+        lines = parse_lrc(rec.get("syncedLyrics") or "")
+        return Lyrics(lines, []) if lines else None
 
     def _search(self, m: dict) -> str:
         dur = float(m.get("duration") or 0)
