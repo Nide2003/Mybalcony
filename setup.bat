@@ -1,5 +1,5 @@
 @echo off
-rem wisland one-click setup: creates .venv, makes sure pip exists, installs requirements.
+rem mybalcony one-click setup: creates .venv, makes sure pip exists, installs requirements.
 rem This file is ASCII-only on purpose (cmd.exe parses .bat files with the system code page).
 setlocal EnableExtensions
 cd /d "%~dp0"
@@ -7,7 +7,7 @@ set "PYTHONUTF8=1"
 set "PIP_DISABLE_PIP_VERSION_CHECK=1"
 
 echo.
-echo  ===== wisland setup =====
+echo  ===== Mybalcony setup =====
 echo.
 
 rem ---- 1. find Python 3.10+ ----
@@ -71,12 +71,12 @@ if errorlevel 1 (
 )
 
 echo.
-echo  Done! Double-click "wisland.vbs" to start wisland.
+echo  Done! Double-click "mybalcony.vbs" to start Mybalcony.
 echo  Live Japanese subtitles download their models (about 630 MB) the first time you use them.
 echo.
-choice /c YN /m "Start wisland now"
+choice /c YN /m "Start Mybalcony now"
 if errorlevel 2 exit /b 0
-start "" wscript.exe "%~dp0wisland.vbs"
+start "" wscript.exe "%~dp0mybalcony.vbs"
 exit /b 0
 
 :try

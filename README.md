@@ -1,4 +1,4 @@
-# Wisland · Windows 液态灵动岛
+# Mybalcony · Windows 液态灵动岛
 
 贴在屏幕边缘的液态毛玻璃胶囊，悬停弹性展开。Windows 10 / 11，Python + PySide6。
 
@@ -8,11 +8,11 @@
 
 1. 安装 **Python 3.10 或更新版本**：<https://www.python.org/downloads/windows/>
    （安装时勾选 **Add python.exe to PATH**）
-2. 下载本项目：右侧 **Releases** 里下载 `wisland-x.y.z.zip` 并解压
-   （或 `git clone https://github.com/AsamiAkito/wisland.git`）。
+2. 下载本项目：右侧 **Releases** 里下载 `mybalcony-x.y.z.zip` 并解压
+   （或 `git clone https://github.com/Nide2003/Mybalcony.git`）。
    路径里最好不要有特殊字符。
 3. 双击 **`setup.bat`**：自动创建 `.venv`、补齐 pip、安装依赖（PyPI 连不上时自动改用清华镜像），需要几分钟。
-4. 双击 **`wisland.vbs`** 启动。还没运行过 `setup.bat` 时，它会提示并帮你运行。
+4. 双击 **`mybalcony.vbs`** 启动。还没运行过 `setup.bat` 时，它会提示并帮你运行。
 
 开机自启：右键灵动岛 → 开机自启。
 
@@ -49,7 +49,7 @@
 
 ## 常见问题
 
-- **双击 vbs 报错 80070002 / 没反应 / No module named 'PySide6'**：依赖没装进 `.venv`，运行 `setup.bat`（不要用全局的 `pip install`）；还不行就删掉 `.venv` 文件夹再运行一次。日志在 `data\wisland.log`。
+- **双击 vbs 报错 80070002 / 没反应 / No module named 'PySide6'**：依赖没装进 `.venv`，运行 `setup.bat`（不要用全局的 `pip install`）；还不行就删掉 `.venv` 文件夹再运行一次。日志在 `data\mybalcony.log`。
 - **实时字幕没反应**：第一次使用要先下载模型，按钮旁会显示下载进度；下载失败时检查网络 / 代理后再点一次，会接着下载。没有填 DeepSeek Key 时只显示日语、不翻译。
 - **setup.bat 提示找不到 Python**：装 Python 时没勾选 Add to PATH；重新运行安装程序选 Modify 勾上即可。
 - **没显示正在播放 / 没有歌词**：网易云无需设置（读取它的本地日志）；QQ 音乐需在 设置 → 常规设置 中勾选「显示系统媒体传输控制(SMTC)」。没有接入系统媒体控件的播放器，播放按钮会改发键盘媒体键。周杰伦等网易云没有版权的歌曲没有歌词。
@@ -78,3 +78,4 @@
 ---
 
 实时字幕与单词本流水线移植自 [YishengTranslator-White](https://github.com/kayson-39/YishengTranslator-White)（MIT）。MIT License.
+上游项目[github.com/AsamiAkito/wisland](https://github.com/AsamiAkito/wisland)，MIT 许可。

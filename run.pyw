@@ -11,7 +11,7 @@ def _relaunch_windowless():
     """uv 创建的 .venv 里 Scripts\\pythonw.exe 其实是控制台程序，直接用它启动（例如旧的开机自启项、
     电脑管家恢复的启动项）会弹出终端窗口，关掉窗口灵动岛也会退出。
     检测到自己挂在控制台上时，改用基础解释器的 pythonw.exe 重新启动自己并立即退出。"""
-    if os.environ.get("WISLAND_CONSOLE") or os.environ.get("WISLAND_RELAUNCHED"):
+    if os.environ.get("MYBALCONY_CONSOLE") or os.environ.get("MYBALCONY_RELAUNCHED"):
         return
     try:
         import ctypes
@@ -22,7 +22,7 @@ def _relaunch_windowless():
         pyw = os.path.join(base, "pythonw.exe")
         if not os.path.isfile(pyw):
             return
-        env = dict(os.environ, WISLAND_RELAUNCHED="1")
+        env = dict(os.environ, MYBALCONY_RELAUNCHED="1")
         venv_py = os.path.join(sys.prefix, "Scripts", "python.exe")
         if sys.prefix != sys.base_prefix and os.path.isfile(venv_py):
             env["__PYVENV_LAUNCHER__"] = venv_py
@@ -39,7 +39,7 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 
 class _Tee:
-    """日志始终写入 data/wisland.log；有控制台时同时输出到控制台。"""
+    """日志始终写入 data/mybalcony.log；有控制台时同时输出到控制台。"""
     def __init__(self, *streams):
         self.streams = [x for x in streams if x is not None]
 
@@ -59,12 +59,12 @@ class _Tee:
 
 
 os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
-_log = open(os.path.join(ROOT, "data", "wisland.log"), "a", encoding="utf-8", buffering=1)
+_log = open(os.path.join(ROOT, "data", "mybalcony.log"), "a", encoding="utf-8", buffering=1)
 sys.stdout = _Tee(sys.stdout, _log)
 sys.stderr = _Tee(sys.stderr, _log)
 
 try:
-    from wisland.app import main
+    from mybalcony.app import main
     sys.exit(main())
 except SystemExit:
     raise
@@ -73,7 +73,7 @@ except ImportError as e:
     import ctypes
     ctypes.windll.user32.MessageBoxW(
         None, f"缺少依赖：{e}\n\n当前 Python：{sys.executable}\n\n请双击项目文件夹里的 setup.bat，"
-              "它会把依赖安装进 .venv；装完后再双击 wisland.vbs 启动。", "wisland 启动失败", 0x10)
+              "它会把依赖安装进 .venv；装完后再双击 mybalcony.vbs 启动。", "Mybalcony 启动失败", 0x10)
     sys.exit(1)
 except Exception:
     traceback.print_exc()

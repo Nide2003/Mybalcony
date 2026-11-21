@@ -1,0 +1,6 @@
+schema: project-wiki
+schema_version: 1.7.0
+schema_updated: '2026-10-30'
+last_migrated: '2026-11-21'
+maintained_by_skill: project-wiki
+notes: Current schema applied.

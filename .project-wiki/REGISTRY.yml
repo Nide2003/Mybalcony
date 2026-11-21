@@ -1,0 +1,125 @@
+version: 1
+updated: '2026-11-21'
+documents:
+- id: GLOSSARY
+  type: note
+  title: Glossary
+  path: GLOSSARY.md
+  status: placeholder
+  tags:
+  - glossary
+  related: []
+  source_paths: []
+  confidence: unknown
+- id: PROJECT
+  type: project
+  title: Mybalcony Project Overview
+  path: PROJECT.md
+  status: active
+  tags:
+  - project
+  related: []
+  source_paths:
+  - README.md
+  - config.example.json
+  - mybalcony/app.py
+  confidence: confirmed
+- id: CURRENT-PLAN
+  type: note
+  title: Current Plan
+  path: implementation/current-plan.md
+  status: placeholder
+  tags:
+  - implementation
+  - plan
+  related: []
+  source_paths: []
+  confidence: unknown
+- id: CONSTRAINTS
+  type: note
+  title: Constraints
+  path: requirements/constraints.md
+  status: placeholder
+  tags:
+  - requirements
+  - constraints
+  related: []
+  source_paths: []
+  confidence: unknown
+- id: OPEN-QUESTIONS
+  type: note
+  title: Open Questions
+  path: requirements/open-questions.md
+  status: placeholder
+  tags:
+  - requirements
+  - open-questions
+  related: []
+  source_paths: []
+  confidence: unknown
+- id: PRODUCT-BRIEF
+  type: note
+  title: Product Brief
+  path: requirements/product-brief.md
+  status: placeholder
+  tags:
+  - requirements
+  - product
+  related: []
+  source_paths: []
+  confidence: unknown
+- id: TECH-ARCHITECTURE
+  type: technical
+  title: Architecture
+  path: technical/architecture.md
+  status: placeholder
+  tags:
+  - technical
+  - architecture
+  related: []
+  source_paths: []
+  confidence: unknown
+- id: TECH-CODEBASE-MAP
+  type: technical
+  title: Codebase Map
+  path: technical/codebase-map.md
+  status: placeholder
+  tags:
+  - technical
+  - codebase
+  related: []
+  source_paths: []
+  confidence: unknown
+- id: TECH-DEPLOYMENT
+  type: technical
+  title: Deployment
+  path: technical/deployment.md
+  status: placeholder
+  tags:
+  - technical
+  - deployment
+  related: []
+  source_paths: []
+  confidence: unknown
+- id: TECH-SECURITY
+  type: technical
+  title: Security
+  path: technical/security.md
+  status: placeholder
+  tags:
+  - technical
+  - security
+  related: []
+  source_paths: []
+  confidence: unknown
+- id: TECH-TESTING
+  type: technical
+  title: Testing
+  path: technical/testing.md
+  status: placeholder
+  tags:
+  - technical
+  - testing
+  related: []
+  source_paths: []
+  confidence: unknown

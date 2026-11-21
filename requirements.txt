@@ -1,4 +1,4 @@
-# wisland dependencies (keep this file ASCII-only: pip on Chinese Windows reads it as GBK)
+# mybalcony dependencies (keep this file ASCII-only: pip on Chinese Windows reads it as GBK)
 PySide6-Essentials>=6.8
 psutil
 httpx

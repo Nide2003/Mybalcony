@@ -45,8 +45,8 @@ def main() -> int:
                 print("  失败：", e)
     if "--dict" in sys.argv:
         sys.path.insert(0, str(ROOT))
-        from wisland.learn import dictionary
-        from wisland.learn.dict_download import download_recommended
+        from mybalcony.learn import dictionary
+        from mybalcony.learn.dict_download import download_recommended
         print("下载词典 …")
         d = dictionary.get()
         for z in download_recommended(print):

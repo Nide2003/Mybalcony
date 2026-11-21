@@ -1,0 +1,6 @@
+# Project Wiki source exclusions.
+# Patterns are relative to the repository root, not this directory.
+# Populate before scan; existing wiki history is preserved.
+# /vendor/
+# /generated/
+# *.min.js

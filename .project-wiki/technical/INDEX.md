@@ -1,0 +1,19 @@
+# Technical Documentation
+
+This section records implemented or observed code behavior and technical structure.
+
+## When To Read
+
+- Work with architecture, modules, APIs, data, integrations, tests, deployment, or security.
+
+## Key Files
+
+- [Architecture](./architecture.md)
+- [Codebase map](./codebase-map.md)
+- [Testing](./testing.md)
+- [Deployment](./deployment.md)
+- [Security](./security.md)
+
+## Placeholders Or Stale Areas
+
+- No project-specific technical documentation has been captured yet.

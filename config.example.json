@@ -15,7 +15,8 @@
     "pinned": false,
     "compact_view": "clock",
     "auto_cycle_s": 30,
-    "passthrough": false
+    "passthrough": false,
+    "embed_bar": true
   },
   "hotkeys": {
     "toggle": "Ctrl+Alt+I",
@@ -96,6 +97,8 @@
     "units": "metric",
     "lang": "zh_cn",
     "interval_min": 15,
+    "provider": "auto",
+    "auto_locate": true,
     "cities": []
   },
   "brightness": {

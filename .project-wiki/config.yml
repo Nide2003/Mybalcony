@@ -1,0 +1,5 @@
+# Project Wiki configuration. Explicit wiki commands remain available.
+config_version: 1
+
+automation:
+  auto_sync: true
