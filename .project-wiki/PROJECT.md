@@ -4,7 +4,7 @@ type: project
 status: active
 title: Mybalcony Project Overview
 created: '2026-11-21'
-updated: '2026-11-21'
+updated: '2026-11-22'
 tags:
 - project
 related: []
@@ -20,10 +20,11 @@ confidence: confirmed
 ## Purpose
 
 Mybalcony is a Dynamic Island-style desktop widget for Windows 10/11. It renders a liquid
-glass capsule anchored to a screen edge that expands elastically on hover into a panel of
-music, messages, weather, stocks, system controls, device battery, clipboard, and
-translation modules. The goal is to provide macOS-like glanceable information without
-occupying desktop space, using native Qt painting rather than a web shell.
+glass capsule anchored to a screen edge. Hover opens a compact medium island; clicking or
+continuously hovering for five seconds expands the full panel of music, messages, weather,
+stocks, system controls, device battery, clipboard, and translation modules. The goal is to
+provide macOS-like glanceable information without occupying desktop space, using native Qt
+foreground controls and an OpenGL live-glass background rather than a web shell.
 
 The upstream project is `github.com/AsamiAkito/wisland` (MIT), deployed locally on
 2026-11-20 at `D:\download\wisland`. The local deployment was customized to address
@@ -55,6 +56,11 @@ the README was rebranded. The clone URL in the README still points to the upstre
 
 - Capsule stays anchored to the physical screen edge (including inside a third-party top
   bar) and expands/collapses without visible tearing.
+- Hover opens only medium content; the full island opens on click or after five seconds of
+  continuous hover.
+- Liquid glass keeps a continuous outer refraction ring, zero central lens displacement,
+  smooth non-ghosting center blur, and a complete-app target of at least 90 native swapped
+  frames per second on the documented reference machine.
 - Lyric scrolling matches the actual playing track, with per-line progress sweep and
   bounce on line change.
 - Device battery readings use real system data; unreadable devices are labeled with the
@@ -66,7 +72,8 @@ the README was rebranded. The clone URL in the README still points to the upstre
 
 ## Global Constraints
 
-- Python 3.10+, PySide6/Qt; all visuals are QPainter-drawn, no web view.
+- Python 3.10+, PySide6/Qt with QPainter foreground controls and native OpenGL 3.3 glass
+  rendering; DXCam supplies live BGRA desktop frames. No web view is used.
 - Must run on Windows 10/11; several integrations rely on WinRT, Win32 APIs, and SetupAPI.
 - Wi-Fi network scanning runs only on panel open: on Windows 11 24H2 `netsh wlan` counts
   as location access and would keep the taskbar location icon lit.

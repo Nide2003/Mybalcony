@@ -14,6 +14,11 @@ This section records implemented or observed code behavior and technical structu
 - [Deployment](./deployment.md)
 - [Security](./security.md)
 
-## Placeholders Or Stale Areas
+## Current Coverage
 
-- No project-specific technical documentation has been captured yet.
+- Architecture: native OpenGL background, Qt foreground, DXCam capture, optical model,
+  frame scheduling, and fallback boundaries (updated 2026-11-22).
+- Codebase map: live-glass modules, configuration, interaction entry points, and invariants.
+- Testing: end-to-end `frameSwapped` acceptance, measured results, optical checks, and
+  medium/large hover regression.
+- Deployment and security remain scaffold placeholders pending a separate targeted review.

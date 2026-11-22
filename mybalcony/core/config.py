@@ -22,10 +22,10 @@ DEFAULTS: dict = {
         "screen": 0,
         "theme": "auto",            # auto / light / dark / liquid-glass / rouge / sky
         "hide_fullscreen": False,      # True = 前台全屏（游戏/视频）时隐藏灵动岛
-        "hover_expand_ms": 120,
+        "hover_expand_ms": 5000,
         "collapse_delay_ms": 320,
         "exclude_from_capture": False,  # False = 灵动岛出现在截图 / 录屏里（取背景时只临时排除自己）
-        "blur_fps": 8,
+        "blur_fps": 90,
         "scale": 1.0,                  # 收起态顶栏胶囊缩放 0.70~1.30（展开面板不受影响）
         "default_tab": "home",
         "expand_mode": "hover",     # hover = 悬停展开 / always = 常驻展开 / never = 保持收起

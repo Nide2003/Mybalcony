@@ -8,7 +8,7 @@ import time
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .anim import Spring, clamp
-from .liquid import paint_chip
+from .liquid import paint_chip, paint_interactive_chip
 from .theme import G, W, icon_font, theme, ui_font
 
 Qt = QtCore.Qt
@@ -21,6 +21,37 @@ def painter(w: QtWidgets.QWidget) -> QtGui.QPainter:
     p.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing)
     p.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
     return p
+
+
+def card_geometry(p, r, radius):
+    """卡片框 → 设备像素对齐后的（本地框, 圆角, 设备缩放）。
+
+    直接描边的四边落点各不相同，抗锯齿给出的强度也就不同；这里把卡片框映射到设备像素、
+    按半像素对齐再映射回来，四边就一样粗、一样实。填充和描边共用这个框，否则转角处
+    黑线会比卡片外沿小半圈，看着就是「折角、不圆滑」。按下旋转时外接框对不上卡片，退回原框。
+    """
+    m = p.combinedTransform()
+    scale = math.sqrt(abs(m.determinant())) or 1.0
+    if abs(m.m12()) > 1e-6 or abs(m.m21()) > 1e-6:
+        return r, radius, scale
+    inv, ok = m.inverted()
+    if not ok:
+        return r, radius, scale
+    box = m.mapRect(r)
+    snap = QtCore.QRectF(QtCore.QPointF(round(box.left()) + 0.5, round(box.top()) + 0.5),
+                         QtCore.QPointF(round(box.right()) - 0.5, round(box.bottom()) - 0.5))
+    local = inv.mapRect(snap)
+    if local.width() < 2 or local.height() < 2:
+        return r, radius, scale
+    rad = max(0.0, radius * (local.width() / max(1.0, r.width())))
+    return local, rad, scale
+
+
+def card_path(p, r, radius):
+    local, rad, scale = card_geometry(p, r, radius)
+    path = QtGui.QPainterPath()
+    path.addRoundedRect(local, rad, rad)
+    return path, scale
 
 
 class Themed:
@@ -44,6 +75,8 @@ class Themed:
 class Hoverable(QtWidgets.QWidget, Themed):
     clicked = QtCore.Signal()
     right_clicked = QtCore.Signal()
+
+    CARD_PAD = 3.0      # uiverse 卡片与控件边的最小留白：给 hover 放大和投影留位置
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -111,6 +144,62 @@ class Hoverable(QtWidgets.QWidget, Themed):
     def press_scale(self) -> float:
         return 1.0 - 0.06 * self._press.x
 
+    def card_transform(self, p, r):
+        """uiverse card 变换：hover 放大、按下缩小并旋转 1.7°。
+
+        放大倍数会被控件边界夹住：按下时卡片还会转 1.7°，宽扁的卡片一转，角就会顶出控件，
+        所以按"旋转后的外接框"算上限——宁可少放大一点，也不能让描边被裁掉。
+        """
+        hx, px = self._hover.x, self._press.x
+        if theme.liquid:
+            sc = (1.0 + 0.025 * hx) * (1.0 - 0.035 * px)
+            p.translate(r.center())
+            p.scale(sc, 1.0 - 0.055 * px + 0.018 * hx)
+            p.translate(-r.center())
+            return
+        ang = 1.7 * px
+        sc = (1.0 + 0.05 * hx) * (1.0 - 0.05 * px)
+        w, h = r.width(), r.height()
+        if w > 1 and h > 1:
+            rad = math.radians(ang)
+            c, s = abs(math.cos(rad)), abs(math.sin(rad))
+            sc = min(sc, self.width() / max(1.0, w * c + h * s),
+                     self.height() / max(1.0, w * s + h * c))
+        p.translate(r.center())
+        p.rotate(ang)
+        p.scale(sc, sc)
+        p.translate(-r.center())
+
+    def card_rect(self, bottom_extra: float = 1.5) -> QtCore.QRectF:
+        """卡片绘制区：四周留出 CARD_PAD，底部再多留一点给投影，避免任何东西溢出控件边界。"""
+        pad = self.CARD_PAD
+        return QtCore.QRectF(self.rect()).adjusted(pad, pad, -pad, -(pad + bottom_extra))
+
+    def paint_card_bg(self, p, r, radius):
+        """液态主题使用共享背景采样的薄玻璃；其他主题保留原有卡片皮肤。"""
+        if theme.liquid:
+            paint_interactive_chip(p, self, r, radius, self._hover.x, self._press.x)
+            return
+        card, scale = card_path(p, r, radius)
+        hx = clamp(self._hover.x, 0.0, 1.0)
+        if hx < 0.6:                              # 悬停时阴影跟着淡出，免得下边比其余三边厚
+            k = 1.0 - hx / 0.6
+            p.strokePath(card.translated(0.8, 1.6), QtGui.QPen(QtGui.QColor(0, 0, 0, int(20 * k)), 4.2))
+            p.strokePath(card.translated(0.4, 0.9), QtGui.QPen(QtGui.QColor(0, 0, 0, int(26 * k)), 2.6))
+        p.fillPath(card, QtGui.QColor(217, 217, 217, 148))
+        if hx > 0.02:
+            p.strokePath(card, QtGui.QPen(QtGui.QColor(255, 255, 255, int(42 * hx)), 6.2 / scale))
+            p.strokePath(card, QtGui.QPen(QtGui.QColor(255, 255, 255, int(86 * hx)), 3.0 / scale))
+            p.strokePath(card, QtGui.QPen(QtGui.QColor(255, 255, 255, int(205 + 50 * hx)), 1.15 / scale))
+        else:
+            p.strokePath(card, QtGui.QPen(QtGui.QColor(255, 255, 255, 235), 1.0 / scale))
+
+    @staticmethod
+    def paint_card_edge(p, r, radius, color, width: float = 1.0):
+        """卡片边框：1 个设备像素，路径与填充共用同一条设备像素对齐的圆角框。"""
+        path, scale = card_path(p, r, radius)
+        p.strokePath(path, QtGui.QPen(color, width / scale))
+
 
 class IconButton(Hoverable):
     """圆形图标按钮：悬停时出现半透明白底。"""
@@ -138,6 +227,14 @@ class IconButton(Hoverable):
 
     def paintEvent(self, e):
         p = painter(self)
+        if theme.liquid:
+            r = self.card_rect()
+            self.card_transform(p, r)
+            self.paint_card_bg(p, r, min(14.0, r.height() / 2))
+            p.setFont(icon_font(self.icon_px))
+            p.setPen(theme.text(0.94))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.glyph)
+            return
         r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
         s = self.press_scale()
         p.translate(r.center())
@@ -184,6 +281,21 @@ class PillButton(Hoverable):
 
     def paintEvent(self, e):
         p = painter(self)
+        if theme.liquid:
+            r = self.card_rect()
+            self.card_transform(p, r)
+            self.paint_card_bg(p, r, min(14.0, r.height() / 2))
+            p.setPen(theme.text(0.94))
+            x = r.x() + 12
+            if self.glyph:
+                p.setFont(icon_font(13))
+                p.drawText(QtCore.QRectF(x, r.y(), 16, r.height()), Qt.AlignmentFlag.AlignCenter, self.glyph)
+                x += 19
+            p.setFont(ui_font(12.5, W.DemiBold))
+            tw = r.right() - x - 10
+            p.drawText(QtCore.QRectF(x, r.y(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                       QtGui.QFontMetrics(p.font()).elidedText(self.text, Qt.TextElideMode.ElideRight, int(tw)))
+            return
         r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
         s = self.press_scale()
         p.translate(r.center())
@@ -348,7 +460,10 @@ class Slider(QtWidgets.QWidget, Themed):
         rad = r.height() / 2
         path = QtGui.QPainterPath()
         path.addRoundedRect(r, rad, rad)
-        p.fillPath(path, theme.track())
+        if theme.liquid:
+            paint_interactive_chip(p, self, r, rad, press=1.0 if self.dragging else 0.0)
+        else:
+            p.fillPath(path, theme.track())
         v = clamp(self.shown.x, 0, 1)
         if v > 0:
             fw = max(r.height(), r.width() * v)
@@ -411,12 +526,22 @@ class Switch(Hoverable):
             round(off.blue() + (on.blue() - off.blue()) * t),
             round(off.alpha() + (255 - off.alpha()) * t))
         p.setPen(Qt.PenStyle.NoPen)
+        if theme.liquid:
+            paint_interactive_chip(p, self, r, 13, self._hover.x, self._press.x)
         p.setBrush(col)
         p.drawRoundedRect(r, 13, 13)
         knob = 22.0
         x = r.x() + 2 + (r.width() - knob - 4) * t
         p.setBrush(theme.on_fg())
-        p.drawEllipse(QtCore.QRectF(x, r.y() + 2, knob, knob))
+        knob_rect = QtCore.QRectF(x, r.y() + 2, knob, knob)
+        p.drawEllipse(knob_rect)
+        if theme.liquid:
+            shine = QtGui.QLinearGradient(knob_rect.topLeft(), knob_rect.bottomRight())
+            shine.setColorAt(0.0, QtGui.QColor(255, 255, 255, 150))
+            shine.setColorAt(0.48, QtGui.QColor(255, 255, 255, 12))
+            shine.setColorAt(1.0, QtGui.QColor(30, 40, 60, 22))
+            p.setBrush(shine)
+            p.drawEllipse(knob_rect)
 
 
 class SwitchRow(QtWidgets.QWidget, Themed):
@@ -533,15 +658,17 @@ class Tile(Hoverable):
 
     def paintEvent(self, e):
         p = painter(self)
-        r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        s = self.press_scale()
-        p.translate(r.center())
-        p.scale(s, s)
-        p.translate(-r.center())
-        base = theme.card(1.0 + 0.5 * self._hover.x)
         if theme.liquid:
-            paint_chip(p, r, 16, base)
+            r = self.card_rect()
+            self.card_transform(p, r)
+            self.paint_card_bg(p, r, 16)
         else:
+            r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
+            s = self.press_scale()
+            p.translate(r.center())
+            p.scale(s, s)
+            p.translate(-r.center())
+            base = theme.card(1.0 + 0.5 * self._hover.x)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(base)
             p.drawRoundedRect(r, 16, 16)
@@ -680,17 +807,17 @@ class CCTile(Hoverable):
 
     def paintEvent(self, e):
         p = painter(self)
-        r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        s = self.press_scale()
-        p.translate(r.center())
-        p.scale(s, s)
-        p.translate(-r.center())
-
-        # 底板：iOS 那种大圆角方块（液态玻璃下换成"玻璃小块"的皮肤）
-        base = theme.card(1.0 + 0.5 * self._hover.x)
         if theme.liquid:
-            paint_chip(p, r, 26, base)
+            r = self.card_rect()
+            self.card_transform(p, r)
+            self.paint_card_bg(p, r, 22)
         else:
+            r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
+            s = self.press_scale()
+            p.translate(r.center())
+            p.scale(s, s)
+            p.translate(-r.center())
+            base = theme.card(1.0 + 0.5 * self._hover.x)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(base)
             p.drawRoundedRect(r, 26, 26)
@@ -799,7 +926,7 @@ class Segmented(QtWidgets.QWidget, Themed):
         cw = r.width() / n
         sel = QtCore.QRectF(r.x() + cw * self.pos_.x + 2, r.y() + 2, cw - 4, r.height() - 4)
         if theme.liquid:
-            paint_chip(p, sel, sel.height() / 2, theme.active_pill(), active=True)
+            paint_interactive_chip(p, self, sel, sel.height() / 2, hover=0.45)
         else:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(theme.active_pill())
@@ -873,7 +1000,7 @@ class Card(QtWidgets.QFrame, Themed):
     def paintEvent(self, e):
         p = painter(self)
         if theme.liquid:
-            paint_chip(p, QtCore.QRectF(self.rect()), self.radius, theme.card(self.alpha))
+            paint_interactive_chip(p, self, QtCore.QRectF(self.rect()), self.radius)
             return
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(theme.card(self.alpha))

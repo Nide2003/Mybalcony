@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mybalcony · 液态玻璃原型</title>
+  <link rel="stylesheet" href="assets/css/app.css" />
+  <!-- GooseHyperGlassCDN 2.5：WebGL 液态玻璃组件 -->
+  <script src="https://glass.goose.cc.cd/liquid-glass.js"></script>
+</head>
+<body>
+  <!-- 装饰背景：用于衬托玻璃折射与磨砂质感 -->
+  <div class="backdrop" aria-hidden="true">
+    <span class="blob b1"></span>
+    <span class="blob b2"></span>
+    <span class="blob b3"></span>
+  </div>
+
+  <!-- 灵动岛：compact 胶囊 / mid 中岛 / full 完整岛 三级状态 -->
+  <div id="island" class="island state-compact">
+    <!-- 收起胶囊 -->
+    <div id="capsule" class="capsule">
+      <div class="cover"><img id="coverImg" alt="封面" /></div>
+      <div class="capsule-text">
+        <div class="capsule-title" id="capsuleTitle"></div>
+        <div class="capsule-lyric" id="capsuleLyric"></div>
+      </div>
+      <div id="petMount" class="pet"></div>
+    </div>
+
+    <!-- 中岛（悬停展开）：媒体卡 + 快捷按钮 + 概览条 -->
+    <div id="midPanel" class="mid-panel">
+      <div class="mid-media glass-card">
+        <div class="cover lg"><img id="midCover" alt="封面" /></div>
+        <div class="mid-media-text">
+          <div class="mid-title" id="midTitle"></div>
+          <div class="mid-artist" id="midArtist"></div>
+          <div class="mid-lyric" id="midLyric"></div>
+        </div>
+      </div>
+      <div id="midActions" class="mid-actions"></div>
+      <div class="mid-overview" id="midOverview"></div>
+    </div>
+
+    <!-- 完整岛（点击展开）：导航 + 功能页舞台 -->
+    <div id="fullPanel" class="full-panel">
+      <div id="navMount" class="nav-mount"></div>
+      <div id="stage" class="stage"></div>
+    </div>
+  </div>
+
+  <script src="assets/js/data.js"></script>
+  <script src="assets/js/boot.js"></script>
+</body>
+</html>

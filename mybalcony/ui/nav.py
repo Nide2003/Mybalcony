@@ -21,6 +21,8 @@ Qt = QtCore.Qt
 
 ICON_W = 34.0
 GAP = 16.0
+BTN_GAP = 14.0        # 图标组与右侧按钮之间的间距（整组居中时一起算）
+CAP_PAD = 14.0        # 玻璃胶囊在图标组两侧各留的空白（用户要"缩进去"，就是它）
 LONG_PRESS_MS = 380
 
 
@@ -133,11 +135,35 @@ class NavBar(QtWidgets.QWidget):
         self._place_right()
 
     def _place_right(self):
-        x = self.width()
-        for b in reversed(self.right_buttons):
-            x -= b.width()
-            b.move(x, (self.height() - b.height()) // 2)
-            x -= 2
+        """右侧按钮跟在图标组尾巴后面，跟着一起居中；没有图标组时退回贴右。"""
+        rects = self._rects()
+        xs = [r.right() for r in rects if r.width() > 0]
+        if not xs:
+            x = self.width()
+            for b in reversed(self.right_buttons):
+                x -= b.width()
+                b.move(x, (self.height() - b.height()) // 2)
+                x -= 2
+            return
+        x = max(xs) + BTN_GAP
+        for b in self.right_buttons:
+            b.move(round(x), (self.height() - b.height()) // 2)
+            x += b.width() + 2
+
+    def capsule_rect(self) -> QtCore.QRectF:
+        """导航玻璃胶囊的范围（导航控件局部坐标）：图标组 + 右侧按钮 + 两侧各 CAP_PAD。
+
+        胶囊要贴着内容，不能铺满控件宽度（那样两端会各空出一大块）。
+        图标组宽度随当前页签弹性变化，所以这个矩形也是每帧变的。
+        """
+        rects = [r for r in self._rects() if r.width() > 0]
+        xs = [r.left() for r in rects] + [b.x() for b in self.right_buttons]
+        xe = [r.right() for r in rects] + [b.x() + b.width() for b in self.right_buttons]
+        if not xs:
+            return QtCore.QRectF(0, 0, self.width(), self.height())
+        x0 = min(xs) - CAP_PAD
+        x1 = max(xe) + CAP_PAD
+        return QtCore.QRectF(x0, 0, x1 - x0, self.height())
 
     # --- 状态 ---
     def keys(self) -> list[str]:
@@ -214,6 +240,7 @@ class NavBar(QtWidgets.QWidget):
         for s in self.w + self.hover + self.pops:
             s.step(dt)
         busy = self._ghost_tick()
+        self._place_right()                       # 宽度动画时按钮跟着图标组走
         rest = all(s.rest for s in self.w + self.hover + self.pops)   # 落位时可能刚触发果冻
         self.update()
         win = self.window()
@@ -249,7 +276,10 @@ class NavBar(QtWidgets.QWidget):
             gap = max(GAP * 0.5, gap)
         else:
             gap = GAP
-            left = (self.width() - (sum(widths[i] for i in vis) + gap * (len(vis) - 1))) / 2
+            tabs = sum(widths[i] for i in vis) + gap * (len(vis) - 1)
+            btns = sum(b.width() + 2 for b in self.right_buttons)
+            total = tabs + (BTN_GAP + btns if self.right_buttons else 0.0)
+            left = (self.width() - total) / 2
         x = max(2.0, left)
         for i in vis:
             out[i] = QtCore.QRectF(x, 2, widths[i], h - 4)
@@ -490,8 +520,8 @@ class NavBar(QtWidgets.QWidget):
                 p.translate(-r.center())
             if active:                            # 当前项底块一起被果冻带着走
                 if theme.liquid:
-                    from .liquid import paint_chip
-                    paint_chip(p, r, r.height() / 2, theme.active_pill(), active=True)
+                    from .liquid import paint_interactive_chip
+                    paint_interactive_chip(p, self, r, r.height() / 2, hover=max(self.hover[i].x, 0.45))
                 else:
                     p.setBrush(theme.active_pill())
                     p.drawRoundedRect(r, r.height() / 2, r.height() / 2)

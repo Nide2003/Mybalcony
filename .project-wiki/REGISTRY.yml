@@ -1,5 +1,5 @@
 version: 1
-updated: '2026-11-21'
+updated: '2026-11-22'
 documents:
 - id: GLOSSARY
   type: note
@@ -23,18 +23,29 @@ documents:
   - README.md
   - config.example.json
   - mybalcony/app.py
+  - mybalcony/ui/island.py
+  - mybalcony/ui/gpu_window.py
+  - mybalcony/ui/gpu_widget.py
+  - mybalcony/core/config.py
   confidence: confirmed
 - id: CURRENT-PLAN
   type: note
   title: Current Plan
   path: implementation/current-plan.md
-  status: placeholder
+  status: active
   tags:
   - implementation
   - plan
-  related: []
-  source_paths: []
-  confidence: unknown
+  - liquid-glass
+  related:
+  - TECH-ARCHITECTURE
+  - TECH-TESTING
+  source_paths:
+  - mybalcony/ui/island.py
+  - mybalcony/ui/glass.py
+  - mybalcony/ui/gpu_window.py
+  - mybalcony/ui/gpu_widget.py
+  confidence: confirmed
 - id: CONSTRAINTS
   type: note
   title: Constraints
@@ -72,24 +83,46 @@ documents:
   type: technical
   title: Architecture
   path: technical/architecture.md
-  status: placeholder
+  status: active
   tags:
   - technical
   - architecture
-  related: []
-  source_paths: []
-  confidence: unknown
+  - liquid-glass
+  - opengl
+  related:
+  - TECH-CODEBASE-MAP
+  - TECH-TESTING
+  source_paths:
+  - mybalcony/ui/island.py
+  - mybalcony/ui/glass.py
+  - mybalcony/ui/gpu_widget.py
+  - mybalcony/ui/gpu_window.py
+  - mybalcony/ui/gpu_glass.py
+  confidence: confirmed
 - id: TECH-CODEBASE-MAP
   type: technical
   title: Codebase Map
   path: technical/codebase-map.md
-  status: placeholder
+  status: active
   tags:
   - technical
   - codebase
-  related: []
-  source_paths: []
-  confidence: unknown
+  - liquid-glass
+  related:
+  - TECH-ARCHITECTURE
+  - TECH-TESTING
+  source_paths:
+  - run.pyw
+  - mybalcony/app.py
+  - mybalcony/core/config.py
+  - mybalcony/ui/island.py
+  - mybalcony/ui/glass.py
+  - mybalcony/ui/gpu_widget.py
+  - mybalcony/ui/gpu_window.py
+  - mybalcony/ui/gpu_glass.py
+  - mybalcony/ui/compact.py
+  - requirements.txt
+  confidence: confirmed
 - id: TECH-DEPLOYMENT
   type: technical
   title: Deployment
@@ -116,10 +149,19 @@ documents:
   type: technical
   title: Testing
   path: technical/testing.md
-  status: placeholder
+  status: active
   tags:
   - technical
   - testing
-  related: []
-  source_paths: []
-  confidence: unknown
+  - performance
+  - liquid-glass
+  related:
+  - TECH-ARCHITECTURE
+  - TECH-CODEBASE-MAP
+  source_paths:
+  - mybalcony/ui/glass.py
+  - mybalcony/ui/gpu_widget.py
+  - mybalcony/ui/gpu_window.py
+  - mybalcony/ui/gpu_glass.py
+  - mybalcony/ui/island.py
+  confidence: confirmed

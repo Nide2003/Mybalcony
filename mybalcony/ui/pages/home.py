@@ -343,32 +343,26 @@ class Action(Hoverable):
 
     def paintEvent(self, e):
         p = painter(self)
-        r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        sc = self.press_scale()
-        p.translate(r.center())
-        p.scale(sc, sc)
-        p.translate(-r.center())
+        hx, psx = self._hover.x, self._press.x
+        r = self.card_rect()
+        # uiverse card 变换：hover 放大 1.05；按下缩小 0.95 并旋转 1.7°（放大倍数受控件边界夹住）
+        self.card_transform(p, r)
         if theme.liquid:
-            # 和控制页那 4 个方块磁贴同一套玻璃皮肤：常驻淡玻璃，悬停更亮，开启态偏蓝
-            from ..liquid import paint_chip
-            base = theme.card(1.0 + 0.5 * self._hover.x)
-            if self.on:
-                base = QtGui.QColor(theme.on_color())
-                base.setAlphaF(0.20 + 0.10 * self._hover.x)
-            paint_chip(p, r, 16, base, active=self.on)
-        elif self._hover.x > 0.01:
+            self.paint_card_bg(p, r, 16)
+        elif hx > 0.01:
             c = theme.hover()
-            c.setAlphaF(c.alphaF() * self._hover.x)
+            c.setAlphaF(c.alphaF() * hx)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(c)
             p.drawRoundedRect(r, 16, 16)
-        col = theme.on_color() if self.on else theme.text(0.9)
-        p.setFont(icon_font(18))
+        # 图标 + 文字：黑色粗体；开启态蓝色强调
+        col = theme.on_color() if self.on else theme.text(0.90)
+        p.setFont(icon_font(17))
         p.setPen(col)
-        p.drawText(QtCore.QRectF(r.x(), r.y() + 6, r.width(), 26), Qt.AlignmentFlag.AlignCenter, self.glyph)
-        p.setFont(ui_font(11.5, W.DemiBold if self.on else W.Medium))
-        p.setPen(theme.on_color() if self.on else theme.text2())
-        p.drawText(QtCore.QRectF(r.x(), r.y() + 32, r.width(), 18), Qt.AlignmentFlag.AlignCenter, self.title)
+        p.drawText(QtCore.QRectF(r.x(), r.y() + 3, r.width(), 24), Qt.AlignmentFlag.AlignCenter, self.glyph)
+        p.setFont(ui_font(11.5, W.DemiBold))
+        p.setPen(col)
+        p.drawText(QtCore.QRectF(r.x(), r.y() + 28, r.width(), 17), Qt.AlignmentFlag.AlignCenter, self.title)
 
 
 _icon_provider = None
@@ -438,17 +432,22 @@ class LaunchIcon(Hoverable):
 
     def paintEvent(self, e):
         p = painter(self)
-        r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        s = self.press_scale() * (1 + 0.06 * self._hover.x)
-        p.translate(r.center())
-        p.scale(s, s)
-        p.translate(-r.center())
-        if self._hover.x > 0.01:
-            c = theme.hover()
-            c.setAlphaF(c.alphaF() * self._hover.x)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(c)
-            p.drawRoundedRect(r, 12, 12)
+        if theme.liquid:
+            r = self.card_rect()
+            self.card_transform(p, r)
+            self.paint_card_bg(p, r, 12)
+        else:
+            r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
+            s = self.press_scale() * (1 + 0.06 * self._hover.x)
+            p.translate(r.center())
+            p.scale(s, s)
+            p.translate(-r.center())
+            if self._hover.x > 0.01:
+                c = theme.hover()
+                c.setAlphaF(c.alphaF() * self._hover.x)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(c)
+                p.drawRoundedRect(r, 12, 12)
         if self.pm is not None:
             ir = QtCore.QRectF(r.center().x() - 14, r.center().y() - 14, 28, 28)
             p.drawPixmap(ir.toRect(), self.pm)
@@ -612,14 +611,19 @@ class AppTile(Hoverable):
 
     def paintEvent(self, e):
         p = painter(self)
-        r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        s = self.press_scale()
-        p.translate(r.center())
-        p.scale(s, s)
-        p.translate(-r.center())
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(theme.card(1.0 + 0.6 * self._hover.x))
-        p.drawRoundedRect(r, 18, 18)
+        if theme.liquid:
+            r = self.card_rect()
+            self.card_transform(p, r)
+            self.paint_card_bg(p, r, 16)
+        else:
+            r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
+            s = self.press_scale()
+            p.translate(r.center())
+            p.scale(s, s)
+            p.translate(-r.center())
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(theme.card(1.0 + 0.6 * self._hover.x))
+            p.drawRoundedRect(r, 18, 18)
         col = KIND_COLORS.get(self.kind, KIND_COLORS["other"])
         cr = QtCore.QRectF(r.x() + 12, r.y() + 12, 30, 30)
         p.setBrush(col)

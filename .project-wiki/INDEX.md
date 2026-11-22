@@ -2,7 +2,7 @@
 
 This wiki stores the project knowledge base for requirements, changes, technical documentation, implementation state, and traceability. Use this file as the routing entrypoint; open only the linked files needed for the current task.
 
-Last updated: 2026-11-21
+Last updated: 2026-11-22
 
 ## Current State
 

@@ -23,10 +23,12 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ..core.config import cfg
 from .anim import Spring, clamp, lerp, smooth
 from .compact import CompactView
-from .glass import Backdrop, exclude_from_capture
+from .glass import (Backdrop, exclude_from_capture, grab_tiny, set_acrylic,
+                    _downscale, _set_window_pos, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE)
 from .nav import NavBar
 from .shape import body_path, body_points, deform, drip_path, edge_corners, neck_path, poly_path
 from .theme import G, theme
+
 
 Qt = QtCore.Qt
 user32 = ctypes.WinDLL("user32")
@@ -34,9 +36,27 @@ user32 = ctypes.WinDLL("user32")
 WIN_W, WIN_H = 900, 680          # 窗口（逻辑像素），需容纳展开尺寸 + 液桥 + 阴影
 EXP_W = 640
 PAD = 12
+CARD_MARGIN = 10                 # 内卡片与液态玻璃四周的距离
+CARD_INNER = 8                   # 内容与内卡片边缘的距离（10→8，让 卡片边距 + 轮廓外沿 = 31 = 折射带 band）
+CARD_R = 18                      # 内卡片圆角
+NAV_GAP = 12.4                   # 导航胶囊与内容的缝 = 0.40 × band（band 31）
+PANEL_R = 40.0                   # 面板圆角兜底值（正常路径按 PANEL_R_RATIO 算）
+PANEL_R_RATIO = 0.18             # 面板所有圆角 = 短边 × 18%
+NAV_GLASS_BLUR = 11.0            # 导航条模糊玻璃：先按 1/11 下采样再平滑放大（等效大半径高斯）
+NAV_GLASS_TINT = 15               # 导航条白 tint 的 alpha（0~255）
 NAV_H = 36
 FILLET = 13.0                    # 贴边两侧内凹圆角
 BREAK = 64.0                     # 液桥拉断距离
+
+
+def panel_radius(w: float, h: float) -> float:
+    """面板圆角：短边 × 18%（页面高度一变半径就跟着变）。
+
+    折叠态 / 尺寸动画中途只有二三十像素高，18% 会算出个位数，整条变方 ——
+    所以下限取「半高封顶 18」，那一段仍是胶囊。
+    """
+    return max(PANEL_R_RATIO * min(w, h), min(h * 0.5, 18.0))
+ACRYLIC_TINT = 0x08FFFFFF        # DWM 亚克力的底色：只留一点点白，几乎是纯模糊
 JOIN = 30.0                      # 靠近到这个距离时液桥伸出
 EDGE_MARGIN = 6
 
@@ -231,6 +251,10 @@ class Island(QtWidgets.QWidget):
         self.peak_fn = peak_fn or (lambda: 0.0)
 
         self.backdrop = Backdrop()
+        self._plate_at = 0.0              # 上一次整屏快照的时间戳（见 _snap_plate）
+        self._clean_plate = None          # 挪走窗口抓到的那张干净快照（补自画像用）
+        self._clean_rect = None
+        self._snapping = False            # 正在把窗口挪出屏幕抓快照（期间忽略悬停判断）
         self.compact = CompactView()
         self.pages = pages
 
@@ -291,6 +315,26 @@ class Island(QtWidgets.QWidget):
         self._bd_fade_t0 = 0.0
         self._shell_msg = 0
         self._dirty = QtCore.QRect()
+        # 液态玻璃的镜面高光跟着光标走：展开静止时帧循环本来是停的，鼠标在面板里
+        # 画圈会让高光定格 / 一顿一顿地跳。光标移动时维持一小段时间的逐帧重绘。
+        self._spec_until = 0.0
+        self._spec_pos = QtCore.QPoint()
+        self._lg_img: QtGui.QImage | None = None     # 液态玻璃静态光学层缓存
+        self._lg_key = None
+
+        # ---- 原生 OpenGL 背景层；Qt 窗口保留全部前景与交互 ----
+        self.gpu_view = None
+        self._native_gpu = False
+        if theme.liquid:
+            try:
+                from .gpu_window import NativeGlassWindow
+                self.gpu_view = NativeGlassWindow(self)
+                self._native_gpu = True
+                self.backdrop.direct_gpu = True
+            except Exception as exc:
+                self.gpu_view = None
+                self.backdrop.direct_gpu = False
+                print("Native GPU init failed:", repr(exc))
 
         # ---- 展开内容 ----
         self.content = QtWidgets.QWidget(self)
@@ -308,7 +352,7 @@ class Island(QtWidgets.QWidget):
             self.stack.addWidget(pg)
             pg.island = self
         lay = QtWidgets.QVBoxLayout(self.content)
-        lay.setSpacing(8)
+        lay.setSpacing(NAV_GAP)                    # 导航与内容的缝（12.4 = 0.4 × band）
         self._content_lay = lay
         self._nav_bottom = None
         self._place_nav()
@@ -460,22 +504,133 @@ class Island(QtWidgets.QWidget):
         cfg.set("island.tab_order", list(keys))
         self._page_key = self.nav.current()
 
+    def _content_margin(self) -> float:
+        """内容区边距：液态主题下内容落在内卡片里，要按卡片边距算，否则页高会短一截。"""
+        return CARD_MARGIN + CARD_INNER if theme.liquid else PAD
+
+    def page_body_height(self, page_h: float) -> float:
+        """页高 -> 面板高。边距上下不对称（上 m-2、下 m），再加导航栏和 8px 间距。"""
+        m = self._content_margin()
+        return (m - 2) + NAV_H + 8 + page_h + m
+
     def expanded_size(self) -> tuple[float, float]:
         """打开时的尺寸（按上次停留的页面的高度）。"""
         pg = self.current_page()
-        return EXP_W, PAD - 2 + NAV_H + 8 + pg.preferred_height() + PAD
+        return EXP_W, self.page_body_height(pg.preferred_height())
 
     def target_size(self) -> tuple[float, float]:
         if self.expanded:
             pg = self.current_page()
-            h = PAD - 2 + NAV_H + 8 + pg.preferred_height() + PAD
-            return EXP_W, h
+            return EXP_W, self.page_body_height(pg.preferred_height())
         return self.compact.size_hint()
+        return self.compact.size_hint()
+
+    def _snap_plate(self, force: bool = False, move: bool = True):
+        """抓一张"身后"的整屏快照，交给 Backdrop 当真实桌面。
+
+        为什么非要避开自己：Windows 对半透明分层窗口的 GDI 截屏只有两条路 —— 排除自己，
+        整块窗口连透明边距一起变成纯黑；不排除，拍到的是自家上一帧。
+
+        move=True：把窗口推出屏幕 25ms 再挪回来（实测 SW_HIDE 的窗口重新显示会留下一块
+        永远不重绘的黑色）。走 Qt 的 move：SetWindowPos 是物理像素，控件坐标是逻辑像素，
+        150% 缩放下回填会错位，窗口就跑到别的地方去了（表现就是鼠标放上去不展开）。
+        move=False：窗口还没显示过（启动阶段）时用，这时屏幕本来就是干净的，不用挪。
+        关键：**悬停期间绝不挪窗口**，鼠标一动就会被打断。
+        """
+        if self._snapping:
+            return
+        if move and not force and self._inside(QtGui.QCursor.pos()):
+            return                                    # 鼠标压在岛上，不动它
+        g = self.scr.geometry()
+        ox, oy = self.x(), self.y()
+        veil = False
+        vx = vy = 0
+        try:
+            veil = self.veil.isVisible()
+            vx, vy = self.veil.x(), self.veil.y()
+        except Exception:  # noqa: BLE001
+            veil = False
+        off = g.left() - self.width() - 400
+        if move:
+            self._snapping = True
+        try:
+            if move:
+                self.move(off, oy)
+                if veil:
+                    self.veil.move(off, vy)
+                QtCore.QThread.msleep(25)             # 等 DWM 把移走的窗口从合成里摘掉
+            dpr = max(1.0, float(self.scr.devicePixelRatio()))
+            pw, ph = int(round(g.width() * dpr)), int(round(g.height() * dpr))
+            # 1:1 抓物理像素，缩小交给 Qt 的平滑缩放。原来直接在 GDI 里 StretchBlt 到 1/3，
+            # HALFTONE 的 8x8 误差扩散会把细密文字抖成一层网格 —— 磨砂之后就是"脏"的花纹。
+            img = grab_tiny(g.x(), g.y(), pw, ph, pw, ph)
+            if img is not None:
+                # 1900：玻璃中间现在直接铺这块快照（1:1 落图），1280 对应 1707 逻辑像素只有
+                # 0.75 倍，放大回去就是"很糊"的根源。1900 ≈ 1.11 倍，落图时是缩小，肉眼等于原生。
+                tw = min(pw, 1900)
+                th = max(2, int(round(ph * tw / pw)))
+                img = _downscale(img, tw, th)
+                if move or not self.isVisible():
+                    # 挪走窗口抓的、或者窗口还没显示时抓的，才是真·干净快照；
+                    # 留一份当"自家窗口那块"的备份，后面不挪窗口的抓图用它盖住自画像。
+                    self._clean_plate = img.copy()
+                    self._clean_rect = QtCore.QRect(g)
+                if not move:
+                    # 不挪窗口抓的那一张里，屏幕上还留着我们自己的那一帧（胶囊，或者一次
+                    # 还没收起的展开面板）。现在玻璃中间是 1:1 落图，这些自画像会以原生清晰度
+                    # 出现在玻璃里（连导航图标一起，还带着折射带的色散彩虹边）。
+                    self._plate_patch_self(img, g)
+                self.backdrop.set_plate(img, g)
+                self._plate_at = time.perf_counter()
+        finally:
+            if move:
+                self.move(ox, oy)
+                if veil:
+                    self.veil.move(vx, vy)
+                self._snapping = False
+
+    def _plate_patch_self(self, img: QtGui.QImage, g: QtCore.QRect):
+        """把快照里自家那块（胶囊 / 面板）盖掉（只在不挪窗口抓图时需要）。
+
+        优先用之前"挪走窗口抓到的干净快照"里的同一块像素贴回去 —— 那才是真实的桌面
+        （用下方条带盖是兜底，只适合小胶囊）。"""
+        try:
+            b = self.path.boundingRect()
+            org = getattr(self, "_win_origin", None) or QtCore.QPoint(self.x(), self.y())
+            gr = QtCore.QRectF(b.x() + org.x(), b.y() + org.y(), b.width(), b.height())
+            s = img.width() / max(1.0, float(g.width()))
+            r = QtCore.QRect(int(math.floor(gr.x() * s)) - 3, int(math.floor(gr.y() * s)) - 3,
+                             int(math.ceil(gr.width() * s)) + 6, int(math.ceil(gr.height() * s)) + 6)
+            r = r.intersected(img.rect())
+            if r.isEmpty():
+                return
+            p = QtGui.QPainter(img)
+            p.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_Source)
+            clean, crect = getattr(self, "_clean_plate", None), getattr(self, "_clean_rect", None)
+            if clean is not None and crect is not None and not clean.isNull() and crect == g:
+                # 两张快照同一块屏幕、同一尺度，直接按像素坐标对拷
+                p.drawImage(r, clean, r)
+                p.end()
+                return
+            src = r.translated(0, r.height() + 2).intersected(img.rect())
+            if src.isEmpty() or src.height() < 2:
+                p.end()
+                return
+            p.drawImage(r.topLeft(), img.copy(src), QtCore.QRect(0, 0, r.width(), r.height()))
+            p.end()
+        except Exception:  # noqa: BLE001
+            pass
 
     def expand(self, page: str | None = None):
         if self.mode != "anchored" or self._fs_hidden:
             return
+        # 展开瞬间的光脉冲（沉浸光感：窗口"活过来"那一下主题色晕提亮）
+        self._pulse_t0 = time.perf_counter()
         if not self.expanded:
+            # 展开这一瞬间窗口还只有那颗小胶囊，屏幕其余部分是干净的 —— 趁这时抓一张
+            # 新的整屏快照，面板就不会再拿启动时那张过期桌面当背景（过期画面糊出来
+            # 就是一层"脏"的鬼影，跟背后的真实窗口对不上）。
+            self._snap_plate(force=True, move=False)
             # 打开时停留在上次收起前的页面（热键 / 托盘等指定了页面的除外）
             self.show_page(page or self._page_key)
         elif page:
@@ -677,6 +832,10 @@ class Island(QtWidgets.QWidget):
     def _needs_frames(self) -> bool:
         if self.mode != "anchored" or self.drips or self._bd_prev is not None:
             return True
+        if theme.liquid and self.expanded and self.gpu_view is not None and self.gpu_view.isVisible():
+            return True
+        if theme.liquid and self.expanded and time.perf_counter() < self._spec_until:
+            return True                  # 镜面高光跟手：鼠标停稳后自动停帧，不常驻 60fps
         for s in (self.sw, self.sh, self.content_a, self.compact_a, self.neck_s, self.lift, self.tilt):
             if not s.rest:
                 return True
@@ -688,6 +847,13 @@ class Island(QtWidgets.QWidget):
         now = time.perf_counter()
         dt = min(1 / 30, max(1 / 240, now - self._last))
         self._last = now
+
+        if (self.gpu_view is not None and self.gpu_view.isVisible() and self.expanded
+                and self.mode == "anchored" and not self.drips and self._bd_prev is None
+                and all(s.rest for s in (self.sw, self.sh, self.content_a, self.compact_a))):
+            self.gpu_view.update()
+            self.timer.setInterval(11)
+            return
 
         if self.embed_bar() and now - self._bar_probe_t > 1.5:
             # MyDockFinder 可能比本程序晚启动（或中途重启），持续重探顶栏高度
@@ -704,6 +870,17 @@ class Island(QtWidgets.QWidget):
                 self._drag_vx = self.fx.v
                 # iOS 那种"甩起来会微微倾斜"：按水平速度给一个很小的角度，限幅 6°
                 self.tilt.to(clamp(-self._drag_vx * 0.006, -6.0, 6.0), 520, 0.55)
+        if self.gpu_view is not None:
+            should_show = theme.liquid and self.mode != "drag"
+            if self.gpu_view.isVisible() != should_show:
+                if self._native_gpu:
+                    self.gpu_view.setFlag(Qt.WindowType.WindowStaysOnTopHint,
+                                          bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint))
+                self.gpu_view.setVisible(should_show)
+                if self._native_gpu and should_show:
+                    user32.SetWindowPos(int(self.gpu_view.winId()), int(self.winId()),
+                                        0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+                    self.raise_()
         if not self.expanded:
             cw, ch = self.compact.size_hint()
             if abs(self.sw.target - cw) > 0.5 or abs(self.sh.target - ch) > 0.5:
@@ -795,6 +972,10 @@ class Island(QtWidgets.QWidget):
         elif self.mode == "anchored" and self.sw.rest and self.sh.rest and not self.expanded:
             # 只有常态动画：表情 / 音乐律动 / 提醒时 60fps，空闲（只有圆角呼吸）时 30fps
             self.timer.setInterval(16 if self.compact.busy() else 33)
+        elif (self.mode == "anchored" and self.expanded and theme.liquid
+              and self.sw.rest and self.sh.rest):
+            # 90 Hz 液态背景由 DXCam 驱动；GPU/CPU 实际帧率由性能采样记录。
+            self.timer.setInterval(11)
         else:
             self.timer.setInterval(16)
 
@@ -894,9 +1075,8 @@ class Island(QtWidgets.QWidget):
         lbody = body.translated(off)
 
         # ---- 半径 ----
-        base_r = min(h / 2, w / 2, 30.0)
-        if self.expanded or h > 60:
-            base_r = min(30.0, h / 2, w / 2)
+        # 面板圆角 = 短边 × 18%（原来的固定 40 只是兜底值）
+        base_r = panel_radius(w, h)
         t_now = time.perf_counter() - self._t0
         fillet = FILLET
         if self.mode == "anchored" and not self.expanded:
@@ -994,6 +1174,13 @@ class Island(QtWidgets.QWidget):
         old = self.path.boundingRect().toAlignedRect()
         self.path = path
         self.body = lbody
+        if self.gpu_view is not None:
+            if self._native_gpu:
+                self.gpu_view.sync_geometry()
+            else:
+                gpu_rect = path.boundingRect().toAlignedRect().adjusted(-2, -2, 2, 2)
+                if gpu_rect != self.gpu_view.geometry():
+                    self.gpu_view.setGeometry(gpu_rect)
         new = path.boundingRect().toAlignedRect()
         dirty = old.united(new).adjusted(-16, -16, 16, 16)
 
@@ -1016,7 +1203,13 @@ class Island(QtWidgets.QWidget):
         # ---- 毛玻璃采样（后台线程）：覆盖当前形状 + 目标形状，一次截图够整段展开动画用 ----
         self._request_backdrop()
         # 整块重绘（而不是只脏区）：拖动时窗口本身也在移动，只重绘脏区会留下上一帧的残影
-        self.update()
+        # 直接 GPU 静止时只重绘 OpenGL 画布；形状改变才让父窗口重画阴影。
+        if self.gpu_view is not None and self.gpu_view.isVisible() and self.mode != "drag":
+            self.gpu_view.update()
+            if old != new:
+                self.update()
+        else:
+            self.update()
 
     def _content_rect(self, tw, th, lbody: QtCore.QRectF | None = None) -> QtCore.QRect:
         """内容区：贴着吸附边、沿边居中（窗口坐标）。"""
@@ -1037,64 +1230,92 @@ class Island(QtWidgets.QWidget):
         lay = self._content_lay
         lay.removeWidget(self.nav)
         lay.removeWidget(self.stack)
+        # 液态主题：内容落在内卡片里，边距 = 卡片与玻璃的距离 + 卡片内边距
+        m = CARD_MARGIN + CARD_INNER if theme.liquid else PAD
         if bottom:
-            lay.setContentsMargins(PAD, PAD, PAD, PAD - 2)
+            lay.setContentsMargins(m, m, m, m - 2)
             lay.addWidget(self.stack, 1)
             lay.addWidget(self.nav)
         else:
-            lay.setContentsMargins(PAD, PAD - 2, PAD, PAD)
+            lay.setContentsMargins(m, m - 2, m, m)
             lay.addWidget(self.nav)
             lay.addWidget(self.stack, 1)
 
     def _theme_changed(self):
         """换主题：液态玻璃会影响背景图本身的处理，所以立刻重取一次背景。"""
         self.backdrop.liquid = theme.liquid
+        self._nav_bottom = None                # 强制按新主题重算内容边距（内卡片）
+        self._place_nav()
         self._request_backdrop()
         self.update()
 
     def _request_backdrop(self):
-        moving = self.mode != "anchored" or not (self.sw.rest and self.sh.rest)
+        animating = self.mode == "anchored" and not (self.sw.rest and self.sh.rest)
         if self.mode == "anchored":
             tw, th = self.target_size()
             tc = self._center_on_edge(self.edge, self._anchor_along(tw, th), 0, tw, th)
             g = QtCore.QRectF(tc.x() - tw / 2, tc.y() - th / 2, tw, th).toAlignedRect()
-            if not self.expanded:
-                # 收起时也预先截取展开尺寸的背景：打开的第一帧就有正确的玻璃，不会闪
-                ew, eh = self.expanded_size()
-                ec = self._center_on_edge(self.edge, self._anchor_along(ew, eh), 0, ew, eh)
-                g = g.united(QtCore.QRectF(ec.x() - ew / 2, ec.y() - eh / 2, ew, eh).toAlignedRect())
-            if not (self.sw.rest and self.sh.rest):
-                g = g.united(self.body.toAlignedRect().translated(self._win_origin))
+            # 始终预先覆盖展开尺寸：收起时打开第一帧就有玻璃，展开/收起动画全程区域固定，
+            # 后台线程不会因为 g 每帧变化被反复唤醒（那会和折射重算叠加成明显掉帧）。
+            ew, eh = self.expanded_size()
+            ec = self._center_on_edge(self.edge, self._anchor_along(ew, eh), 0, ew, eh)
+            g = g.united(QtCore.QRectF(ec.x() - ew / 2, ec.y() - eh / 2, ew, eh).toAlignedRect())
             pad = 40                      # 覆盖两侧表面张力圆角
+            if theme.liquid:
+                pad = 150                 # 液态玻璃：折射取样朝外最多约 80px，需要足够宽的真实像素环
         else:
             g = self.path.boundingRect().toAlignedRect().translated(self._win_origin)
-            pad = 90
+            pad = 90 if not theme.liquid else 150
+        # 自家窗口里"面板本体"这块在截图里是自画像（外面那圈透明边距仍是真背景），
+        # 把面板轮廓（含自绘阴影）让 Backdrop 用四周颜色扩散补掉；再往外 30px 留给折射取样。
+        self.backdrop.hole = self.path.boundingRect().toAlignedRect().translated(
+            self._win_origin).adjusted(-30, -30, 30, 30)
         g = g.adjusted(-pad, -pad, pad, pad)
         q = 16                            # 对齐网格：区域不随轮廓的细微变化而抖动
         x0, y0 = (g.left() // q) * q, (g.top() // q) * q
         x1, y1 = -((-(g.right() + 1)) // q) * q, -((-(g.bottom() + 1)) // q) * q
         g = QtCore.QRect(x0, y0, x1 - x0, y1 - y0)
-        if moving:
-            interval = 1 / 40
+        if self.mode != "anchored":
+            interval = 1 / 40           # 拖动：窗口真的在移动，背景要跟上
         else:
             fps = max(2.0, float(cfg.get("island.blur_fps", 10)))
-            interval = 1 / (fps if self.expanded else min(fps, 3.0))   # 收起静止时身后画面变化不敏感
-            if self.capture_visible():
-                # 参与截图时，每次取背景都要临时把自己排除约 17ms：静止时降低频率，
-                # 让截图 / 录屏几乎总能拍到灵动岛（动画、拖动时仍高频刷新）
-                interval = 1 / (1.5 if self.expanded else 1.0)
+            interval = 1 / (fps if self.expanded else min(fps, 12.0))
+            if animating and not theme.liquid:
+                # 展开 / 收起只是形状在变，身后的画面并没有变。原来这里按 1/40 抓屏，
+                # 每次抓屏还会触发一次全窗口重绘，和折射重算叠加就是掉帧的主因。
+                interval = max(interval, 1 / 8)
         need = self.path.boundingRect().toAlignedRect().translated(self._win_origin).intersected(self.scr.geometry())
         self.backdrop.liquid = theme.liquid
+        # 收起静止、鼠标离岛 200px 以外时，才允许重拍快照（换壁纸 / 关窗口后画面能跟上）。
+        # 鼠标在附近或正在悬停展开时一律不动窗口，否则会把悬停打断。
+        if (theme.liquid and self.backdrop.live is None and not self.expanded and not animating and self.isVisible()
+                and time.perf_counter() - self._plate_at > 60.0
+                and self._mouse_far(200.0)):
+            self._snap_plate()
+        # DWM 亚克力实测模糊半径只有 ~10px，挡不住背后窗口的硬直边（竖条色带还在），
+        # 所以不用它，中间那块真模糊改成"藏窗口抓一张整屏快照"再自己糊（见 _snap_plate）。
+        want_acr = False
+        if want_acr != self.backdrop.acrylic:
+            self.backdrop.acrylic = want_acr
+            set_acrylic(int(self.winId()), want_acr, ACRYLIC_TINT)
+        # 材质分级：收起态是常规面，展开后是浮起卡片，模糊更深一档，层级关系才立得住
+        self.backdrop.material = "elevated" if self.expanded else "regular"
         self.backdrop.request(self.scr, g, interval, urgent=not self.backdrop.covers(need))
 
     def _on_backdrop(self, changed: bool):
         theme.feed_luminance(self.backdrop.luminance)
         if not changed:
             return
-        if self._bd_shown is not None and self._bd_shown[0] is not self.backdrop.state[0]:
+        if self.gpu_view is not None and self.gpu_view.isVisible():
+            self._bd_prev = None
+            self._bd_shown = (self.backdrop.state[0], self.backdrop.state[1])
+        elif self._bd_shown is not None and self._bd_shown[0] is not self.backdrop.state[0]:
             self._bd_prev = self._bd_shown            # 旧背景淡出、新背景淡入
             self._bd_fade_t0 = time.perf_counter()
-        self._kick()
+        if self.gpu_view is not None and self.gpu_view.isVisible():
+            self.gpu_view.update()
+        else:
+            self._kick()
 
     # ================================================================ 绘制
     def paintEvent(self, e):
@@ -1125,33 +1346,98 @@ class Island(QtWidgets.QWidget):
             p.scale(1.0 + 0.06 * lift, 1.0 + 0.05 * lift)
             p.translate(-c.x(), -c.y())
         # 1) 柔和阴影（几层半透明描边，廉价近似）：抬起时阴影更大更软
-        sp = path.translated(0, 1.5 + 6.0 * lift)
+        #    对齐沉浸光感那版：radius 20 / rgba(0,0,0,0.15) / offsetY -4（阴影往上飘一点，
+        #    玻璃才像被光从下方托起来的，而不是贴在地上）。
+        sp = path.translated(0, -4.0 + 6.0 * lift)
         k = 1.8 if theme.liquid else 1.0            # 液态玻璃要有明确的脱离感，阴影加重
-        for wdt, a in ((14, 5), (8, 9), (4, 14)):
+        for wdt, a in ((20, 9), (12, 13), (6, 22)):
             p.strokePath(sp, QtGui.QPen(QtGui.QColor(0, 0, 0, min(90, int(a * k * (1.0 + 2.4 * lift)))),
                                         wdt * (1.0 + 0.8 * lift)))
+        if self.gpu_view is not None and self.gpu_view.isVisible() and self.mode != "drag":
+            if self._native_gpu:
+                self._paint_foreground(p, path)
+            p.restore()
+            p.end()
+            return
         self._paint_glass(p, path)
-        bb = self.body
-        # 4) 轮廓：外侧极淡暗线 + 内侧高光边
-        p.strokePath(path, QtGui.QPen(theme.outline(), 1.6))
-        rg = QtGui.QLinearGradient(0, bb.top(), 0, bb.bottom())
-        rg.setColorAt(0, theme.rim_top())
-        rg.setColorAt(1, theme.rim_bottom())
-        p.strokePath(path, QtGui.QPen(QtGui.QBrush(rg), 1.0))
-        self._paint_rest(p, path, bb)
+        self._paint_foreground(p, path)
         p.restore()
         p.end()
+
+    def _paint_foreground(self, p: QtGui.QPainter, path: QtGui.QPainterPath):
+        bb = self.body
+        # 3.5) 液态玻璃大岛：乳白底铺满整个玻璃轮廓，面板本身就是包裹全部组件的那张卡
+        if theme.liquid and self.expanded:
+            from .liquid import paint_body_fill
+            paint_body_fill(p, path, bb)
+            # 3.6) 导航条的高斯模糊玻璃胶囊（画在乳白底之上，图标仍由子控件画在最上层）
+            self._paint_nav_glass(p)
+        # 4) 轮廓：按 Liquid Glass 规范做的「1px Inside 描边 + 135° 对角渐变」
+        #    起点（左上迎光角）白 75% → 中点 14% → 终点（右下反光角）38%，
+        #    再叠一条 Y=1 / 2px 的白内阴影（35%），在顶部压出一条液态高光线。
+        self._paint_edge(p, path, bb)
+        self._paint_rest(p, path, bb)
 
     def _paint_glass(self, p: QtGui.QPainter, path: QtGui.QPainterPath, crossfade: bool = True):
         """毛玻璃底 + 色调 + 光泽（灵动岛本体与内容渐显面纱共用）。"""
         base_opacity = p.opacity()
         # 2) 毛玻璃底（新截图与上一张交叉淡入，避免跳变）
         state = self.backdrop.state
+        drawn = False
         if theme.liquid and state[0] is not None:
             # 液态玻璃：不是把背景糊上来，而是沿形状边缘做一次位移折射（真折射，不是磨砂）
-            br = self.backdrop.brush_liquid(
-                self.body.translated(QtCore.QPointF(self._win_origin)),
-                min(self.body.width(), self.body.height()) * 0.5, self._win_origin)
+            # 尺寸动画 / 拖动期间形状每帧都变：不向后台提交精确形状，沿用上一张折射图，
+            # 等稳定下来再提交一次（否则后台会被每帧一个新形状压满）。
+            animating = self.mode != "anchored" or not (self.sw.rest and self.sh.rest)
+            # 圆角必须传真实面板圆角（body_path 用的是 PANEL_R）。
+            # 这里原来传 min(w,h)*0.5，SDF 会被算成一个胶囊 / 椭圆，玻璃中间就会冒出一道半圆弧。
+            # 形状用**轮廓 bbox** 而不是 body：绘制出来的玻璃边比 body 左右各宽 13px
+            # （body_path 的描边外沿），用 body 算 SDF 时折射带整条都缩在里面，看上去
+            # 就是"扭曲发生在一个内框里、没贴到最外沿"。注意要和 rect 一样用全局坐标。
+            shape = self.path.boundingRect().translated(QtCore.QPointF(self._win_origin))
+            got = self.backdrop.liquid_image(
+                shape, panel_radius(shape.width(), shape.height()), self._win_origin,
+                animate=animating)
+            br = None
+            if got is not None:
+                # 不能用纹理画刷铺折射图：QBrush 是"图案"，图没盖住的区域会被平铺/留空。
+                # 这里直接按矩形 1:1 画图并裁到轮廓（不拉伸，理由见下面 tgt 那段）。
+                img, grect = got
+                p.save()
+                p.setClipPath(path)
+                tgt = QtCore.QRectF(grect.x() - self._win_origin.x(), grect.y() - self._win_origin.y(),
+                                    grect.width(), grect.height())
+                need = path.boundingRect()
+                # 图盖不住面板时**绝对不能**把图拉伸成 need 去凑满：面板贴着屏幕顶边，
+                # 抓屏矩形被裁到 y>=0，grect 的上边比轮廓 bbox 差 1~2px，这段判断就永远成立，
+                # 于是 960x592 的图被硬压成 666x335 —— 横向挤 1.44 倍、纵向挤 1.77 倍，
+                # 背景跟着放大错位，折射带也按同一比例被缩放、整体缩进面板内部。
+                # 改成 1:1 落图：差出来的那几像素在面板最外沿，还被轮廓裁掉，根本看不见。
+                if tgt.width() >= need.width() * 0.55 and tgt.height() >= need.height() * 0.55:
+                    # 1) 底层：全分辨率背景 1:1 落图（Source 写死 alpha，玻璃层不透明，
+                    #    否则 DWM 会把"玻璃层 + 背后真实窗口"再混一次）。
+                    hi, hirect = self.backdrop.hi, self.backdrop.hi_rect
+                    p.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_Source)
+                    if hi is not None and not hi.isNull() and not hirect.isEmpty():
+                        hi_tgt = QtCore.QRectF(hirect.x() - self._win_origin.x(),
+                                               hirect.y() - self._win_origin.y(),
+                                               hirect.width(), hirect.height())
+                        p.drawImage(hi_tgt, hi)
+                        p.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_SourceOver)
+                        # 2) 折射带：只有那一圈有 alpha，叠上去以后中间仍是原像素
+                        p.drawImage(tgt, img)
+                    else:
+                        # 没有全分辨率副本（抓屏兜底路径）就只能整张铺
+                        p.drawImage(tgt, img)
+                        p.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_SourceOver)
+                    drawn = True
+                p.restore()
+            else:
+                shape = self.path.boundingRect()
+                br = self.backdrop.brush_liquid(
+                    shape.translated(QtCore.QPointF(self._win_origin)),
+                    panel_radius(shape.width(), shape.height()), self._win_origin,
+                    animate=animating)
             fade = 1.0
         else:
             br = self.backdrop.brush_for(state, self._win_origin)
@@ -1169,30 +1455,196 @@ class Island(QtWidgets.QWidget):
                 self._bd_prev = None
             if br is not None:
                 p.fillPath(path, br)
-            else:
+            elif not drawn:
                 p.fillPath(path, QtGui.QColor(128, 128, 128, 200))
         if crossfade:
             self._bd_shown = state
+        # 2.5) 沉浸光感：材质膜 + 主题色晕 + 顶部反射 + 底部微光分割线
+        if theme.liquid and drawn:
+            self._paint_immersive(p, path, self.body)
         # 3) 色调 + 纵向光泽
         p.fillPath(path, theme.tint_brush(self.body))
         bb = self.body
-        g = QtGui.QLinearGradient(0, bb.top(), 0, bb.bottom())
-        g.setColorAt(0, QtGui.QColor(255, 255, 255, 26 if not theme.dark else 14))
-        g.setColorAt(0.5, QtGui.QColor(255, 255, 255, 0))
-        g.setColorAt(1, QtGui.QColor(255, 255, 255, 10))
-        p.fillPath(path, g)
+        if not theme.liquid:
+            # 液态玻璃的霜层已在 tint 里，不再叠纵向白光，避免发灰
+            g = QtGui.QLinearGradient(0, bb.top(), 0, bb.bottom())
+            g.setColorAt(0, QtGui.QColor(255, 255, 255, 26 if not theme.dark else 14))
+            g.setColorAt(0.5, QtGui.QColor(255, 255, 255, 0))
+            g.setColorAt(1, QtGui.QColor(255, 255, 255, 10))
+            p.fillPath(path, g)
         if theme.liquid:
             self._paint_liquid(p, path, bb)
 
+    EDGE_STOPS = ((0.0, 0.76), (0.5, 0.14), (1.0, 0.38))   # 135° 对角：左上 76% → 中点 14% → 右下 38%
+    EDGE_TOP_GLOW = 35                                     # 顶部液态高光线（白 35%）
+
+    def _paint_edge(self, p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF):
+        """Liquid Glass 的立体边缘：1px Inside 描边 + 135° 对角渐变 + 顶部液态高光。
+
+        Qt 没有 Figma 那种 blur 内阴影，这里用「轮廓下移 1/2/3px、alpha 递减」三层描边
+        近似 Y=1 / Blur=2 的效果，再裁在路径内，所以只在顶部压出一条丝滑的高光线。
+        """
+        p.save()
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        if theme.liquid:
+            p.setClipPath(path)
+            p.strokePath(path.translated(0, 0.8), QtGui.QPen(QtGui.QColor(255, 255, 255, 46), 0.8))
+            p.restore()
+            return
+        g = QtGui.QLinearGradient(bb.topLeft(), bb.bottomRight())      # 左上 → 右下 = 135°
+        for pos, a in self.EDGE_STOPS:
+            g.setColorAt(pos, QtGui.QColor(255, 255, 255, int(round(255 * a))))
+        p.strokePath(path, QtGui.QPen(QtGui.QBrush(g), 1.0))
+        p.setClipPath(path)
+        for dy, wid, alpha in ((1.0, 1.2, self.EDGE_TOP_GLOW), (2.0, 2.4, 16), (3.2, 3.6, 7)):
+            p.strokePath(path.translated(0, dy),
+                         QtGui.QPen(QtGui.QColor(255, 255, 255, alpha), wid))
+        p.restore()
+
+    def _nav_strip_rect(self) -> QtCore.QRectF | None:
+        """导航条玻璃胶囊的矩形（窗口内坐标）：贴着图标组，两端各留 14，不铺满整条。"""
+        nav = getattr(self, "nav", None)
+        if nav is None or not nav.isVisible() or nav.width() < 40:
+            return None
+        cap = nav.capsule_rect()
+        o = nav.mapTo(self, QtCore.QPoint(0, 0))
+        return QtCore.QRectF(o.x() + cap.x(), o.y() + cap.y(), cap.width(), cap.height())
+
+    def _paint_nav_glass(self, p: QtGui.QPainter):
+        """导航条的高斯模糊玻璃条。
+
+        取样用的是全分辨率快照 `backdrop.hi`（不是把已经画好的自己再糊一遍），
+        模糊只作用在图标**下面**那层像素；图标是子控件绘制的，始终清晰。
+        半径 = 半高，整条是胶囊，和 18% 的面板圆角形成一大一小。
+        """
+        if not theme.liquid:
+            return
+        r = self._nav_strip_rect()
+        if r is None:
+            return
+        hi, hr = self.backdrop.hi, self.backdrop.hi_rect
+        if hi is None or hi.isNull() or hr.isEmpty():
+            return
+        s = hi.width() / max(1.0, float(hr.width()))          # 每逻辑像素几个物理像素
+        g = r.translated(QtCore.QPointF(self._win_origin))
+        sub = QtCore.QRectF((g.x() - hr.x()) * s, (g.y() - hr.y()) * s,
+                            g.width() * s, g.height() * s).toAlignedRect()
+        sub = sub.intersected(QtCore.QRect(0, 0, hi.width(), hi.height()))
+        if sub.isEmpty() or sub.width() < 8:
+            return
+        src = hi.copy(sub)
+        k = NAV_GLASS_BLUR
+        mid = src.scaled(max(2, int(src.width() / 3)), max(2, int(src.height() / 3)),
+                         QtCore.Qt.AspectRatioMode.IgnoreAspectRatio,
+                         QtCore.Qt.TransformationMode.SmoothTransformation)
+        small = mid.scaled(max(2, int(src.width() / k)), max(2, int(src.height() / k)),
+                           QtCore.Qt.AspectRatioMode.IgnoreAspectRatio,
+                           QtCore.Qt.TransformationMode.SmoothTransformation)
+        cap = QtGui.QPainterPath()
+        cap.addRoundedRect(r, r.height() / 2, r.height() / 2)
+        p.save()
+        p.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, True)
+        p.setClipPath(cap)
+        p.setOpacity(0.93)
+        p.drawImage(r, small)                                  # 放大回去 = 高斯雾化
+        p.setOpacity(1.0)
+        p.fillPath(cap, QtGui.QColor(255, 255, 255, NAV_GLASS_TINT))
+        p.setClipping(False)
+        rr = r.height() / 2
+        p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 84), 1.4))
+        top = QtGui.QPainterPath()
+        top.moveTo(r.x() + rr, r.y() + 0.8)
+        top.lineTo(r.right() - rr, r.y() + 0.8)
+        p.drawPath(top)
+        p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 30), 1.0))
+        p.drawPath(cap)
+        p.restore()
+
+    def _paint_immersive(self, p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF):
+        """沉浸光感（HarmonyOS `systemMaterialEffect.IMMERSIVE` 的三层合成）。
+
+        ArkUI 那边是「backgroundBlurStyle 磨砂底 + 主题色微光晕染 + 顶部线性高光」叠出来的，
+        再配一条底部微光分割线。Windows 上没有系统级 backdropBlur，所以磨砂底由
+        `glass._frost` 自己算（见 `_capture`），这里只负责它上面那三层。
+        """
+        pal = theme.pal
+        gp = QtCore.QPointF(QtGui.QCursor.pos()) - QtCore.QPointF(self._win_origin)
+        hovered = self.body.contains(gp)
+        # 1) 材质膜：三档通透感（强 0.85 / 平衡 0.70 / 弱 0.55，配置 island.mat_level）。
+        #    鼠标进面板时上浮一档，对应文章里 onHover 把透明度 +0.1 —— 玻璃"被摸到"时更实。
+        lvl = str(cfg.get("island.mat_level", "balanced"))
+        film = {"strong": 76, "balanced": 48, "weak": 20}.get(lvl, 48)
+        if hovered:
+            film = min(76, film + 12)
+        p.fillPath(path, QtGui.QColor(255, 255, 255, film))
+        # 2) 主题色晕：从面板上部中心往外散，展开态（焦点）更亮
+        hot = self.expanded
+        c = QtGui.QColor(*(pal.get("bloom" if hot else "bloom_idle", (120, 170, 255, 20))))
+        # 展开瞬间的光脉冲：300ms 内从峰值线性回落到常态（对应 triggerLightPulse）
+        dt = time.perf_counter() - getattr(self, "_pulse_t0", -9.0)
+        pulse = 0.0 if dt <= 0.0 or dt >= 0.30 else 1.0 - dt / 0.30
+        if pulse > 0.0:
+            c = QtGui.QColor(c.red(), c.green(), c.blue(),
+                             min(255, c.alpha() + int(30 * pulse)))
+        rad = QtGui.QRadialGradient(
+            QtCore.QPointF(bb.center().x(), bb.top() + bb.height() * 0.18),
+            max(bb.width(), bb.height()) * 0.8)
+        rad.setColorAt(0.0, c)
+        rad.setColorAt(1.0, QtGui.QColor(c.red(), c.green(), c.blue(), 0))
+        p.fillPath(path, rad)
+        # 3) 顶部反射渐变：改成左下 / 右上对角双光（两端亮、中间暗）
+        from .liquid import dual_edge
+        t = QtGui.QColor(*pal.get("reflect", (255, 255, 255, 38)))
+        p.fillPath(path, dual_edge(bb, t.alpha(), int(t.alpha() * 0.35)))
+
     def _paint_liquid(self, p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF):
-        """液态玻璃的光学层：和二级菜单 / 弹出卡片共用 liquid.paint_layers，只是多一个跟手的高光。"""
-        from .liquid import paint_layers
+        """液态玻璃的光学层：6 层静态渐变预渲染成一张透明图，每帧只贴图 + 画跟手高光。
+
+        展开大岛时这 6 层（多次复杂路径的渐变描边）要 6~7ms，鼠标在面板里转圈每帧重画
+        就会把 60fps 的预算吃光；形状 / 主题不变时它们其实是完全静止的。
+        """
+        from .liquid import paint_spec, paint_static_layers
         gp = QtCore.QPointF(QtGui.QCursor.pos()) - QtCore.QPointF(self._win_origin)
         home = QtCore.QPointF(bb.left() + bb.width() * 0.12, bb.top() + bb.height() * 0.14)
         tgt = gp if self.body.contains(gp) else home
         prev = getattr(self, "_spec_pt", None)
         self._spec_pt = tgt if prev is None else prev + (tgt - prev) * 0.34
-        paint_layers(p, path, bb, self._spec_pt)
+        br = path.boundingRect()
+        r = br.adjusted(-10, -10, 10, 10).toAlignedRect().intersected(self.rect())
+        if r.isEmpty():
+            from .liquid import paint_layers
+            paint_layers(p, path, bb, self._spec_pt)
+            return
+        key = (theme.pal_name, r.x(), r.y(), r.width(), r.height(),
+               round(bb.x(), 1), round(bb.y(), 1), round(bb.width(), 1), round(bb.height(), 1),
+               round(br.x(), 1), round(br.y(), 1), round(br.width(), 1), round(br.height(), 1))
+        if key != self._lg_key or self._lg_img is None:
+            img = QtGui.QImage(r.size(), QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(Qt.GlobalColor.transparent)
+            qp = QtGui.QPainter(img)
+            qp.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            qp.translate(-r.x(), -r.y())
+            paint_static_layers(qp, path, bb)
+            qp.end()
+            self._lg_img = img
+            self._lg_key = key
+        # 缓存图按 r 拉满贴：缓存图若是上一帧的尺寸，按原点贴会露出一块硬边
+        p.drawImage(QtCore.QRectF(r), self._lg_img)
+        # 轮廓高光：由位移向量场推导的非对称刃光（左上强 / 右下弱），比均匀描边更接近苹果的原味
+        glow = self.backdrop.glow
+        if glow is not None:
+            state = self.backdrop.state
+            if state[0] is not None:
+                rect = state[1]
+                p.save()
+                p.setClipPath(path)
+                tr = QtGui.QTransform()
+                tr.translate(rect.x() - self._win_origin.x(), rect.y() - self._win_origin.y())
+                tr.scale(rect.width() / glow.width(), rect.height() / glow.height())
+                p.setTransform(tr, True)
+                p.drawImage(0, 0, glow)
+                p.restore()
+        paint_spec(p, path, bb, self._spec_pt)
 
     def _paint_rest(self, p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF):
         # 5) 常态动画：沿边缘缓慢游走的流光
@@ -1250,6 +1702,12 @@ class Island(QtWidgets.QWidget):
         m = 4.0 + 12.0 * clamp(self.lift.x, 0.0, 1.0)
         return self.body.adjusted(-m, -m, m, m).contains(lp)
 
+    def _mouse_far(self, gap: float) -> bool:
+        """光标是否离整个窗口（含透明边距）至少 gap 个逻辑像素之外。"""
+        gp = QtGui.QCursor.pos()
+        r = self.geometry().adjusted(-gap, -gap, gap, gap)
+        return not r.contains(gp)
+
     def _raise_topmost(self):
         """把自己提到置顶窗口组的最前面。
 
@@ -1283,16 +1741,34 @@ class Island(QtWidgets.QWidget):
         if self._fs_hidden or self.mode != "anchored":
             self._hover_since = self._out_since = None
             return
+        if self._snapping:
+            # 抓整屏快照的那 30ms 窗口被挪出了屏幕，这一帧的"在不在岛上"不可信，直接跳过
+            self._hover_since = self._out_since = None
+            return
         inside = self._inside(QtGui.QCursor.pos())
         now = time.monotonic()
+        if theme.liquid and self.expanded and inside:
+            gp = QtGui.QCursor.pos()
+            if gp != self._spec_pos:
+                self._spec_pos = gp
+                self._spec_until = time.perf_counter() + 0.30
+                self._kick()                 # 停稳 0.3s 后 _needs_frames 自动放回空闲
         if inside and not self.passthrough():
             # 被 Finder 栏之类的置顶窗口压住：光标明明在岛上，命中的却是别人 → 把自己抬回来
             gp = QtGui.QCursor.pos()
             if now - getattr(self, "_raise_t", 0.0) > 0.6 and self._covered(gp):
                 self._raise_t = now
                 self._raise_topmost()
+        if self.expanded and not self.passthrough():
+            # 展开态还要盯住整块面板：豆包 / 编辑器这类自己也置顶的窗口被拉到前面时，
+            # 会把面板下半截盖住，看起来就是"玻璃没铺满 + 一块清晰的脏背景"。
+            gp2 = self.mapToGlobal(QtCore.QPoint(int(self.body.center().x()), int(self.body.center().y())))
+            if now - getattr(self, "_raise_t2", 0.0) > 1.0 and self._covered(gp2):
+                self._raise_t2 = now
+                self._raise_topmost()
         if self.compact.bar_mode and not self.expanded:
-            # 栏内单行：鼠标一进来就向下展开成三行歌词（不再自动弹出整个面板，点一下才开）
+            # 栏内单行：鼠标一进来先向下展开成三行歌词（给即时反馈），
+            # 停留超过 hover_expand_ms 仍然照常弹出整个面板——悬停展开不能再被栏模式吃掉。
             want = inside and not self.passthrough()
             if want != self.compact.bar_open:
                 self.compact.bar_open = want
@@ -1331,10 +1807,10 @@ class Island(QtWidgets.QWidget):
                 return
         if inside:
             self._out_since = None
-            if not self.expanded and self.expand_mode() != "never" and not self.compact.bar_mode:
+            if not self.expanded and self.expand_mode() != "never":
                 if self._hover_since is None:
                     self._hover_since = now
-                elif (now - self._hover_since) * 1000 >= cfg.get("island.hover_expand_ms", 220) \
+                elif (now - self._hover_since) * 1000 >= cfg.get("island.hover_expand_ms", 5000) \
                         and not (user32.GetAsyncKeyState(0x01) & 0x8000):
                     self._hover_since = None
                     self.expand()
@@ -1486,13 +1962,21 @@ class Island(QtWidgets.QWidget):
         self.apply_capture_mode()
 
     def apply_capture_mode(self):
-        """参与屏幕捕获：截图 / 录屏里能看到灵动岛；毛玻璃取背景时只在那一瞬间临时排除自己。
-        不参与：一直排除（截图里看不到灵动岛）。"""
+        """参与屏幕捕获：截图 / 录屏里能看到灵动岛；不参与：永远排除（截图里看不到）。
+
+        注意：取背景时**不再**临时排除自己。实测（Win11）排除期间 GDI 截屏会把整块窗口
+        矩形拍成纯黑 —— 连透明边距也一起黑掉，背景就只剩一圈死黑。现在改成"不排除"，
+        拍到的是自家上一帧，但窗口外那一圈像素是真的：`Backdrop.hole` 会把自家矩形用
+        四周颜色扩散补掉，折射取样点朝外、正好落在真实像素上。
+        """
         hwnd = int(self.winId())
         visible = self.capture_visible()
-        exclude_from_capture(hwnd, not visible)
+        # WGC honors WDA_EXCLUDEFROMCAPTURE, giving the lens the real pixels
+        # behind the island instead of a stale self-portrait. Other themes
+        # retain the user's screen-recording visibility preference.
+        exclude_from_capture(hwnd, not visible or theme.liquid)
         self.backdrop.hwnd = hwnd
-        self.backdrop.self_exclude = visible
+        self.backdrop.self_exclude = False
 
     def expand_mode(self) -> str:
         m = cfg.get("island.expand_mode")
@@ -1568,6 +2052,10 @@ class Island(QtWidgets.QWidget):
 
     # ================================================================ 原生：热键、闪烁、样式
     def showEvent(self, e):
+        # 第一次显示之前先把桌面拍下来：此刻我们的窗口还没进合成，画面本来就是干净的，
+        # 不需要挪窗口，也就完全不会干扰悬停。
+        if self.backdrop._plate is None:
+            self._snap_plate(force=True, move=False)
         super().showEvent(e)
         hwnd = int(self.winId())
         ex = user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)

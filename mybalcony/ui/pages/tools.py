@@ -77,11 +77,16 @@ class ClipRow(Hoverable):
         p.translate(r.center())
         p.scale(sc, sc)
         p.translate(-r.center())
-        fill = theme.active_pill() if self.flash else theme.card(0.75 + 0.8 * self._hover.x)
         if theme.liquid:
-            from ..liquid import paint_chip
-            paint_chip(p, r, 18, fill, active=self.flash)
+            br = self.card_rect()
+            self.card_transform(p, br)
+            self.paint_card_bg(p, br, 16)
+            if self.flash:
+                cp = QtGui.QPainterPath()
+                cp.addRoundedRect(br, 16, 16)
+                p.strokePath(cp, QtGui.QPen(theme.on_color(), 1.2))
         else:
+            fill = theme.active_pill() if self.flash else theme.card(0.75 + 0.8 * self._hover.x)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(fill)
             p.drawRoundedRect(r, 18, 18)
@@ -482,9 +487,14 @@ class WordRow(Hoverable):
     def paintEvent(self, e):
         p = painter(self)
         r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(theme.card(0.7 + 0.8 * self._hover.x))
-        p.drawRoundedRect(r, 14, 14)
+        if theme.liquid:
+            br = self.card_rect()
+            self.card_transform(p, br)
+            self.paint_card_bg(p, br, 12)
+        else:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(theme.card(0.7 + 0.8 * self._hover.x))
+            p.drawRoundedRect(r, 14, 14)
         c = self.card
         x = r.x() + 14
         p.setFont(ui_font(15, W.DemiBold))

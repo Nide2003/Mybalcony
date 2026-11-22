@@ -121,6 +121,9 @@ class ControlsPage(Page):
             t.menu_clicked.connect(lambda k=kind: self._open_menu(k))
         grid = QtWidgets.QGridLayout()
         grid.setSpacing(15)
+        # 宫格必须严丝合缝地等于 gw 的尺寸：QGridLayout 默认带 9px 外边距，会让 2×2 需要
+        # 269px 而容器只有 251px，Qt 去偷间距，最后一行就被页面下沿切掉一条边。
+        grid.setContentsMargins(0, 0, 0, 0)
         self._tiles = (self.wifi, self.hotspot, self.bt, self.air, self.proxy, self.tun)
         for i, t in enumerate(self._tiles):
             grid.addWidget(t, i // 2, i % 2)
@@ -144,14 +147,14 @@ class ControlsPage(Page):
             w.hide()
         gw = QtWidgets.QWidget()
         gw.setLayout(grid)
-        gw.setFixedWidth(TILE * 2 + 15)
+        gw.setFixedSize(TILE * 2 + 15, TILE * 2 + 15)
         self.setLayout(hbox((left, 1), vbox(None, gw, None), spacing=10))
         self._sync_height()
 
     def _sync_height(self):
         """宫格是方块，页高得跟着行数走：两行（默认）或三行（Clash 在跑时多出代理两块）。"""
         rows = 3 if self._clash.get("ok") else 2
-        self.set_height(rows * TILE + (rows - 1) * 15 + 10)
+        self.set_height(rows * TILE + (rows - 1) * 15)
 
     def _toggle(self, kind: str):
         """可用就切换开关；检测不到（台式机没蓝牙 / 驱动不支持）时打开对应的系统设置页。"""
@@ -430,11 +433,16 @@ class WinCard(Hoverable):
         p.translate(r.center())
         p.scale(s, s)
         p.translate(-r.center())
-        fill = theme.card(1.0 + 0.7 * self._hover.x) if not self.info.get("active") else theme.active_pill()
         if theme.liquid:
-            from ..liquid import paint_chip
-            paint_chip(p, r, 14, fill, active=bool(self.info.get("active")))
+            br = self.card_rect()
+            self.card_transform(p, br)
+            self.paint_card_bg(p, br, 14)
+            if self.info.get("active"):
+                cp = QtGui.QPainterPath()
+                cp.addRoundedRect(br, 14, 14)
+                p.strokePath(cp, QtGui.QPen(theme.on_color(), 1.2))
         else:
+            fill = theme.card(1.0 + 0.7 * self._hover.x) if not self.info.get("active") else theme.active_pill()
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(fill)
             p.drawRoundedRect(r, 14, 14)

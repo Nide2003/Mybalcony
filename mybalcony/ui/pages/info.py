@@ -375,14 +375,20 @@ class Daily(QtWidgets.QWidget, Themed):
 def paint_chip(p, r, name: str, temp: str, glyph, selected: bool, default: bool, hover: float = 0.0):
     """一枚城市胶囊的外形：底、天气图标、名称、温度、默认小圆点。"""
     rad = r.height() / 2
-    if selected:
-        if theme.liquid:
-            from ..liquid import paint_chip as glass_chip
-            glass_chip(p, r, rad, theme.active_pill(), active=True)
-        else:
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(theme.active_pill())
-            p.drawRoundedRect(r, rad, rad)
+    if theme.liquid:
+        # 统一 uiverse card 皮肤：半透明灰底 + 白边（hover 变黑）；选中态蓝色刃口
+        card = QtGui.QPainterPath()
+        card.addRoundedRect(r, rad, rad)
+        v = round(245 * (1.0 - hover))
+        if v > 60:
+            p.strokePath(card.translated(0.4, 0.9), QtGui.QPen(QtGui.QColor(0, 0, 0, 20), 4.0))
+        p.fillPath(card, QtGui.QColor(217, 217, 217, 148))
+        edge = theme.on_color() if selected else QtGui.QColor(10 + v, 10 + v, 10 + v, 235)
+        Hoverable.paint_card_edge(p, r, rad, edge, 1.2 if selected else 1.0)
+    elif selected:
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(theme.active_pill())
+        p.drawRoundedRect(r, rad, rad)
     elif hover > 0.01:
         c = theme.hover()
         c.setAlphaF(c.alphaF() * hover)

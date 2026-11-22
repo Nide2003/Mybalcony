@@ -91,7 +91,11 @@ class CCRow(Hoverable):
     def paintEvent(self, e):
         p = painter(self)
         r = QtCore.QRectF(self.rect())
-        if self._hover.x > 0.01:
+        if theme.liquid:
+            br = self.card_rect()
+            self.card_transform(p, br)
+            self.paint_card_bg(p, br, 12)
+        elif self._hover.x > 0.01:
             c = theme.hover()
             c.setAlphaF(c.alphaF() * self._hover.x)
             p.setPen(Qt.PenStyle.NoPen)

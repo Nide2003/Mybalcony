@@ -38,7 +38,7 @@ def _backdrop(widget: QtWidgets.QWidget, rect: QtCore.QRectF, radius: float) -> 
     cache = getattr(widget, "_lg_cache", None)
     if cache is not None and cache[0] == key and time.perf_counter() - cache[2] < TTL:
         return cache[1]
-    img = glass.capture_region(grect, DOWN)
+    img = glass.capture_region(grect, DOWN, material="focused", liquid=True)
     if img is not None:
         try:
             img = glass.refract(img, grect, QtCore.QRectF(grect), radius)
@@ -74,70 +74,191 @@ def paint_chip(p: QtGui.QPainter, rect: QtCore.QRectF, radius: float, fill: QtGu
     p.setBrush(d)
     p.drawRoundedRect(rect, radius, radius)
     p.restore()
-    # 刃口只在上半圈亮起、下半圈淡到消失：这样才不像"描了一圈方框"
-    rim = QtGui.QLinearGradient(0, rect.top(), 0, rect.bottom())
-    rim.setColorAt(0.0, QtGui.QColor(255, 255, 255, 232))
-    rim.setColorAt(0.34, QtGui.QColor(255, 255, 255, 150))
-    rim.setColorAt(0.70, QtGui.QColor(255, 255, 255, 34))
-    rim.setColorAt(1.0, QtGui.QColor(255, 255, 255, 0))
+    # 刃口：左下 / 右上双光源（两个角亮，左上与右下淡到消失），才不像"描了一圈方框"
+    rim = dual_edge(rect, 232, 120)
     p.strokePath(path, QtGui.QPen(QtGui.QBrush(rim), 1.3))
+    p.restore()
+
+
+def paint_interactive_chip(p: QtGui.QPainter, widget: QtWidgets.QWidget, rect: QtCore.QRectF,
+                           radius: float, hover: float = 0.0, press: float = 0.0):
+    """交互控件的薄玻璃：共享岛体快照，控件自身只做轻雾化和跟手光学反馈。"""
+    hover = max(0.0, min(1.0, hover))
+    press = max(0.0, min(1.0, press))
+    win = widget.window()
+    backdrop = getattr(win, "backdrop", None)
+    hi = getattr(backdrop, "hi", None)
+    hr = getattr(backdrop, "hi_rect", QtCore.QRect())
+    origin = getattr(win, "_win_origin", win.mapToGlobal(QtCore.QPoint(0, 0)))
+    if hi is None or hi.isNull() or hr.isEmpty():
+        paint_chip(p, rect, radius, QtGui.QColor(248, 250, 254, round(30 + 18 * hover)), hover > 0.35)
+        return
+    top = widget.mapTo(win, rect.topLeft().toPoint())
+    global_rect = QtCore.QRectF(top.x() + origin.x(), top.y() + origin.y(), rect.width(), rect.height())
+    state_key = (int(getattr(backdrop, "version", 0)), round(global_rect.x(), 1), round(global_rect.y(), 1),
+                 round(rect.width(), 1), round(rect.height(), 1), round(radius, 1),
+                 round(hover * 8), round(press * 8))
+    cached = getattr(widget, "_lg_material_cache", None)
+    if cached is not None and cached[0] == state_key:
+        p.drawImage(rect, cached[1])
+        return
+    sx = hi.width() / max(1.0, float(hr.width()))
+    sy = hi.height() / max(1.0, float(hr.height()))
+    source_rect = QtCore.QRectF((global_rect.x() - hr.x()) * sx, (global_rect.y() - hr.y()) * sy,
+                                global_rect.width() * sx, global_rect.height() * sy).toAlignedRect()
+    source_rect = source_rect.intersected(hi.rect())
+    if source_rect.width() < 4 or source_rect.height() < 4:
+        paint_chip(p, rect, radius, QtGui.QColor(248, 250, 254, round(30 + 18 * hover)), hover > 0.35)
+        return
+    dpr = max(1.0, min(2.0, widget.devicePixelRatioF()))
+    img = QtGui.QImage(max(2, round(rect.width() * dpr)), max(2, round(rect.height() * dpr)),
+                       QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+    img.setDevicePixelRatio(dpr)
+    img.fill(Qt.GlobalColor.transparent)
+    qp = QtGui.QPainter(img)
+    qp.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    qp.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
+    path = QtGui.QPainterPath()
+    local = QtCore.QRectF(0, 0, rect.width(), rect.height())
+    path.addRoundedRect(local, radius, radius)
+    qp.setClipPath(path)
+    sample = hi.copy(source_rect)
+    blur = max(5.0, min(rect.width(), rect.height()) * (0.30 + 0.10 * press))
+    small = sample.scaled(max(2, round(sample.width() / blur)), max(2, round(sample.height() / blur)),
+                          Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    qp.drawImage(local, small)
+    paint_chip(qp, local, radius, QtGui.QColor(248, 250, 254, round(42 + 16 * hover + 8 * press)), hover > 0.35)
+    if press > 0.01:
+        lens = QtGui.QRadialGradient(local.center(), max(local.width(), local.height()) * 0.58)
+        lens.setColorAt(0.0, QtGui.QColor(255, 255, 255, round(34 * press)))
+        lens.setColorAt(0.62, QtGui.QColor(255, 255, 255, round(10 * press)))
+        lens.setColorAt(1.0, QtGui.QColor(255, 255, 255, 0))
+        qp.fillPath(path, lens)
+    qp.end()
+    widget._lg_material_cache = (state_key, img)
+    p.drawImage(rect, img)
+
+
+def dual_edge(bb: QtCore.QRectF, hi: int, mid: int = 0) -> QtGui.QLinearGradient:
+    """左下 ↔ 右上对角双光渐变。
+
+    沿这条对角线投影：左下角 0、右上角 1 最亮，左上 / 右下正好落在 0.5 处熄灭。
+    直接当描边画刷用，刃口就是"两头亮、中间暗"的一道光，而不是均匀一圈白边。
+    """
+    g = QtGui.QLinearGradient(bb.left(), bb.bottom(), bb.right(), bb.top())
+    g.setColorAt(0.00, QtGui.QColor(255, 255, 255, hi))
+    g.setColorAt(0.30, QtGui.QColor(255, 255, 255, mid))
+    g.setColorAt(0.50, QtGui.QColor(255, 255, 255, 0))
+    g.setColorAt(0.70, QtGui.QColor(255, 255, 255, mid))
+    g.setColorAt(1.00, QtGui.QColor(255, 255, 255, hi))
+    return g
+
+
+def paint_static_layers(p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF):
+    """光学层里不随光标变化的前 6 层。桌面窗口每帧重画这几层渐变描边很贵，调用方可以
+    把这几层预渲染成一张透明图缓存起来，每帧只贴一次图 + 画跟手高光。"""
+    p.save()
+    p.setClipPath(path)
+    p.setPen(Qt.PenStyle.NoPen)
+    h = bb.height()
+    # 1) 暗内壁：从轮廓往里衰减，底部最重 —— 只留极轻一层（对齐 Inspira 内阴影，约 5%）
+    vg = QtGui.QLinearGradient(0, bb.top(), 0, bb.bottom())
+    vg.setColorAt(0.0, QtGui.QColor(10, 16, 26, 0))
+    vg.setColorAt(0.55, QtGui.QColor(10, 16, 26, 4))
+    vg.setColorAt(1.0, QtGui.QColor(10, 16, 26, 12))
+    p.strokePath(path, QtGui.QPen(QtGui.QBrush(vg), max(2.0, min(4.0, h * 0.06))))
+    # 2) 细亮刃口：玻璃壁的横截面。左下 / 右上双光源 —— 两个角亮起来，左上与右下熄灭。
+    eg = dual_edge(bb, 92, 46)
+    p.strokePath(path, QtGui.QPen(QtGui.QBrush(eg), 1.4))
+    p.restore()
+
+
+def paint_spec(p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF,
+               spec_pt: QtCore.QPointF | None = None):
+    """第 7 层：跟着光标走的镜面反射点，是光学层里唯一每帧都在变的层。"""
+    p.save()
+    p.setClipPath(path)
+    p.setPen(Qt.PenStyle.NoPen)
+    w, h = bb.width(), bb.height()
+    sp = spec_pt or QtCore.QPointF(bb.left() + w * 0.12, bb.top() + h * 0.14)
+    rad = QtGui.QRadialGradient(sp, max(10.0, min(w, h) * 0.2))
+    rad.setColorAt(0.0, QtGui.QColor(255, 255, 255, 80))
+    rad.setColorAt(0.5, QtGui.QColor(255, 255, 255, 26))
+    rad.setColorAt(1.0, QtGui.QColor(255, 255, 255, 0))
+    p.fillPath(path, rad)
     p.restore()
 
 
 def paint_layers(p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF,
                  spec_pt: QtCore.QPointF | None = None):
-    """玻璃的"光学层"：暗内壁 + 亮刃口 / 暗发丝 + 内折射亮带 + 镜面反射。全部裁在形状内部。"""
+    """玻璃的光学层：静态层 + 跟手高光。弹层 / 菜单直接用这个即可。"""
+    paint_static_layers(p, path, bb)
+    paint_spec(p, path, bb, spec_pt)
+
+
+def paint_body_fill(p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF):
+    """大岛整块玻璃面：直接按玻璃自身的轮廓铺乳白底，不再往里缩一圈内卡片。
+
+    缩进的内卡片会在大岛四周留一圈空玻璃，看起来是两层边；这里让这层乳白一直铺到玻璃
+    轮廓，整块面板就是「包裹所有组件的那一张卡」，只剩下玻璃本体的那一道边。
+    """
+    if path.isEmpty():
+        return
     p.save()
+    p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    # 1) 乳白底：透明玻璃不放白，只留极淡一层（要"泛白"改的就是这个数）
+    p.fillPath(path, QtGui.QColor(248, 250, 254, 8))
+    # 2) 上缘受光渐变
+    g = QtGui.QLinearGradient(0, bb.top(), 0, bb.bottom())
+    g.setColorAt(0.0, QtGui.QColor(255, 255, 255, 34))
+    g.setColorAt(0.5, QtGui.QColor(255, 255, 255, 6))
+    g.setColorAt(1.0, QtGui.QColor(255, 255, 255, 0))
+    p.fillPath(path, g)
+    # 3) 底部轻内阴影
     p.setClipPath(path)
+    d = QtGui.QLinearGradient(0, bb.top() + bb.height() * 0.55, 0, bb.bottom())
+    d.setColorAt(0.0, QtGui.QColor(12, 18, 30, 0))
+    d.setColorAt(1.0, QtGui.QColor(12, 18, 30, 28))
     p.setPen(Qt.PenStyle.NoPen)
-    w, h = bb.width(), bb.height()
-    # 1) 暗内壁：从轮廓往里衰减，底部最重 —— 薄薄一层，太重就成了灰边框
-    vg = QtGui.QLinearGradient(0, bb.top(), 0, bb.bottom())
-    vg.setColorAt(0.0, QtGui.QColor(10, 16, 26, 0))
-    vg.setColorAt(0.55, QtGui.QColor(10, 16, 26, 8))
-    vg.setColorAt(1.0, QtGui.QColor(10, 16, 26, 26))
-    p.strokePath(path, QtGui.QPen(QtGui.QBrush(vg), max(3.0, min(7.0, h * 0.11))))
-    # 2) 亮刃口 + 暗发丝：白/暗/白三层，就是玻璃壁的横截面
-    eg = QtGui.QLinearGradient(0, bb.top(), 0, bb.bottom())
-    eg.setColorAt(0.0, QtGui.QColor(255, 255, 255, 255))
-    eg.setColorAt(0.45, QtGui.QColor(255, 255, 255, 232))
-    eg.setColorAt(1.0, QtGui.QColor(255, 255, 255, 196))
-    p.strokePath(path, QtGui.QPen(QtGui.QBrush(eg), 3.4))
-    dg2 = QtGui.QLinearGradient(0, bb.top(), 0, bb.bottom())
-    dg2.setColorAt(0.0, QtGui.QColor(10, 16, 26, 44))
-    dg2.setColorAt(1.0, QtGui.QColor(10, 16, 26, 92))
-    p.strokePath(path, QtGui.QPen(QtGui.QBrush(dg2), 1.4))
-    # 3) 内折射亮带：刃口往里一小段的漫射光，眼睛会读成"弧面"
-    p.strokePath(path, QtGui.QPen(QtGui.QColor(255, 255, 255, 40), 6.0))
-    # 4) 镜面反射：一道斜穿面板的窄光带（窗口 / 灯管在玻璃上的倒影）
-    ng = QtGui.QLinearGradient(bb.left() - h * 0.1, bb.top(), bb.left() + h * 1.5, bb.top() + h * 0.5)
-    ng.setColorAt(0.00, QtGui.QColor(255, 255, 255, 0))
-    ng.setColorAt(0.30, QtGui.QColor(255, 255, 255, 0))
-    ng.setColorAt(0.36, QtGui.QColor(255, 255, 255, 58))
-    ng.setColorAt(0.44, QtGui.QColor(255, 255, 255, 118))
-    ng.setColorAt(0.52, QtGui.QColor(255, 255, 255, 58))
-    ng.setColorAt(0.58, QtGui.QColor(255, 255, 255, 0))
-    ng.setColorAt(1.00, QtGui.QColor(255, 255, 255, 0))
-    p.fillPath(path, ng)
-    # 5) 大面积漫射光：左上更亮，给玻璃一个受光面
-    lg = QtGui.QLinearGradient(bb.left() + w * 0.04, bb.top(),
-                               bb.left() + w * 0.6, bb.top() + h * 0.62)
-    lg.setColorAt(0.0, QtGui.QColor(255, 255, 255, 96))
-    lg.setColorAt(0.3, QtGui.QColor(255, 255, 255, 22))
-    lg.setColorAt(1.0, QtGui.QColor(255, 255, 255, 0))
-    p.fillPath(path, lg)
-    # 6) 边缘暗角：右下压一点点，玻璃就有体积
-    dgk = QtGui.QLinearGradient(bb.left() + w * 0.5, bb.top(), bb.right(), bb.bottom())
-    dgk.setColorAt(0.0, QtGui.QColor(8, 14, 24, 0))
-    dgk.setColorAt(1.0, QtGui.QColor(8, 14, 24, 46))
-    p.fillPath(path, dgk)
-    # 7) 固定反射点：左上角一枚小而硬的镜面光
-    sp = spec_pt or QtCore.QPointF(bb.left() + w * 0.12, bb.top() + h * 0.14)
-    rad = QtGui.QRadialGradient(sp, max(10.0, min(w, h) * 0.22))
-    rad.setColorAt(0.0, QtGui.QColor(255, 255, 255, 210))
-    rad.setColorAt(0.5, QtGui.QColor(255, 255, 255, 70))
-    rad.setColorAt(1.0, QtGui.QColor(255, 255, 255, 0))
-    p.fillPath(path, rad)
+    p.setBrush(d)
+    p.drawRect(bb)
+    p.restore()
+
+
+def paint_inner_card(p: QtGui.QPainter, bb: QtCore.QRectF, margin: float, radius: float):
+    """大岛内部的圆润衬底卡片：与液态玻璃四周保持 margin 距离，包裹全部内容与组件。
+    半透明白底 + 上缘受光 + 细刃口 + 底部轻内阴影，用来进一步提升文字可读性。"""
+    r = bb.adjusted(margin, margin, -margin, -margin)
+    if r.width() <= 4 or r.height() <= 4:
+        return
+    card = QtGui.QPainterPath()
+    card.addRoundedRect(r, radius, radius)
+    p.save()
+    p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    # 1) 半透明乳白底：在任意壁纸上都把内容区提亮
+    p.fillPath(card, QtGui.QColor(248, 250, 254, 20))
+    # 2) 上缘受光渐变：顶部更亮，向下衰减
+    g = QtGui.QLinearGradient(0, r.top(), 0, r.bottom())
+    g.setColorAt(0.0, QtGui.QColor(255, 255, 255, 64))
+    g.setColorAt(0.5, QtGui.QColor(255, 255, 255, 12))
+    g.setColorAt(1.0, QtGui.QColor(255, 255, 255, 0))
+    p.fillPath(card, g)
+    # 3) 底部轻内阴影：卡片有浮在玻璃上的层次
+    p.save()
+    p.setClipPath(card)
+    d = QtGui.QLinearGradient(0, r.top() + r.height() * 0.55, 0, r.bottom())
+    d.setColorAt(0.0, QtGui.QColor(12, 18, 30, 0))
+    d.setColorAt(1.0, QtGui.QColor(12, 18, 30, 28))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(d)
+    p.drawRoundedRect(r, radius, radius)
+    p.restore()
+    # 4) 细白刃口：上亮下淡
+    rim = QtGui.QLinearGradient(0, r.top(), 0, r.bottom())
+    rim.setColorAt(0.0, QtGui.QColor(255, 255, 255, 220))
+    rim.setColorAt(0.5, QtGui.QColor(255, 255, 255, 150))
+    rim.setColorAt(1.0, QtGui.QColor(255, 255, 255, 90))
+    p.strokePath(card, QtGui.QPen(QtGui.QBrush(rim), 1.2))
     p.restore()
 
 
@@ -160,9 +281,9 @@ def paint_panel(p: QtGui.QPainter, widget: QtWidgets.QWidget, rect: QtCore.QRect
         p.fillPath(path, br)
     p.fillPath(path, theme.tint_brush(rect))
     g = QtGui.QLinearGradient(0, rect.top(), 0, rect.bottom())
-    g.setColorAt(0, QtGui.QColor(255, 255, 255, 26))
+    g.setColorAt(0, QtGui.QColor(255, 255, 255, 10))
     g.setColorAt(0.5, QtGui.QColor(255, 255, 255, 0))
-    g.setColorAt(1, QtGui.QColor(255, 255, 255, 10))
+    g.setColorAt(1, QtGui.QColor(255, 255, 255, 4))
     p.fillPath(path, g)
     paint_layers(p, path, rect, spec_pt)
     p.strokePath(path, QtGui.QPen(theme.outline(), 1.2))

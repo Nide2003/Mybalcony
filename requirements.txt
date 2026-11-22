@@ -14,6 +14,9 @@ winrt-Windows.Devices.Radios
 winrt-Windows.Devices.Bluetooth
 # live Japanese subtitles (speech recognition)
 numpy>=1.26,<3
+windows-capture==2.0.1
+dxcam==0.3.0
+PyOpenGL>=3.1.10
 SoundCard>=0.4,<1
 soxr>=0.3,<1
 sherpa-onnx>=1.12,<2

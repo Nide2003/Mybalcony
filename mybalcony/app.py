@@ -149,6 +149,7 @@ def main():
     from .services.weather import WeatherService, weather_glyph
     from .ui.island import Island
     from .ui.pages.bluetooth import BatteryPage
+    from .ui.pages.blank import BlankPage
     from .ui.pages.home import HomePage, MessagesPage
     from .ui.pages.info import StocksPage, WeatherPage
     from .ui.pages.system import ControlsPage, styled_menu
@@ -189,7 +190,7 @@ def main():
     ctx.island = None
 
     pages = [HomePage(ctx), MessagesPage(ctx), StocksPage(ctx), WeatherPage(ctx), ControlsPage(ctx),
-             BatteryPage(ctx), ClipboardPage(ctx), TranslatePage(ctx)]
+             BatteryPage(ctx), ClipboardPage(ctx), TranslatePage(ctx), BlankPage(ctx)]
     ctx.pages = {p.key: p for p in pages}
     P = ctx.pages
 
@@ -444,14 +445,9 @@ def main():
         m.aboutToHide.connect(lambda: island.locks.discard("menu"))
         m.popup(pos)
     island.menu_requested.connect(show_menu)
-    # 导航：「主页」标签放在播放器封面正上方
-    def nav_anchor():
-        m = P["home"].media
-        if m.width() < 10:
-            return None
-        g = m.mapToGlobal(QtCore.QPoint(m.width() // 2, 0))
-        return island.nav.mapFromGlobal(g).x()
-    island.nav.anchor_fn = nav_anchor
+    # 导航：整组居中（9 个页签 + 右侧两枚按钮算一个块，左右留白相等）。
+    # 旧行为是「主页」标签钉在播放器封面正上方，会把整排顶偏 47px，已弃用。
+    island.nav.anchor_fn = None
 
     # 主页的「保持展开」「可穿透」按钮
     home = P["home"]

@@ -1,41 +1,50 @@
 # Project Status
 
-Last updated: 2026-11-21
+Last updated: 2026-11-22
 
 ## Current Focus
 
-- Project wiki initialized; semantic project identity captured from README, config, and user-provided context.
-- Local deployment is rebranded as **Mybalcony** (renamed from Wisland on 2026-11-21); launch via `mybalcony.vbs`.
+- Liquid-glass rendering and the revised hover interaction are implemented and documented.
+- The active renderer uses a native OpenGL background below the Qt foreground island.
+- Normal runtime configuration is hover expansion, unpinned, with a 90 FPS capture target
+  and a five-second large-island hover delay.
 
 ## Recent Wiki Updates
 
-- 2026-11-21: Project wiki initialized (schema 1.7.0); `PROJECT.md`, `STATUS.md`, `REGISTRY.yml`, always-on instruction files, and the initial audit log created.
+- 2026-11-22: Populated architecture, codebase map, testing, current plan, traceability,
+  and project behavior from the live-glass implementation and measured results.
+- 2026-11-21: Project wiki initialized (schema 1.7.0); project identity and initial audit
+  log captured.
 
 ## Active Work Items
 
-- None captured yet. Use the `update` workflow to add work items from meeting notes or requirements.
+- None captured. See [implementation/current-plan.md](./implementation/current-plan.md)
+  for completed rendering and interaction work and next-change verification guidance.
 
 ## Blockers And Open Questions
 
+- No new open question resulted from the 2026-11-22 rendering or interaction changes.
 - See [requirements/open-questions.md](./requirements/open-questions.md).
 
 ## Active Alerts
 
-- No active alerts captured yet.
+- No active alerts captured.
 
-## Discovery Notes
+## Verification Snapshot
 
-- Most technical/ and requirements/ files remain scaffold placeholders. A follow-up `scan`
-  can populate codebase map, architecture, and device-battery integration docs from source.
-- The product was renamed Wisland → Mybalcony on 2026-11-21 (package, launcher, README);
-  the earlier Chinese background document was removed during that rename. A follow-up
-  `scan` should capture the renamed package layout and current config keys.
+- Native clear-center build: 90.219 complete-app swapped frames per second.
+- Dense 5x5 Gaussian-center build: 117.045 complete-app swapped frames per second in the
+  documented reference scenario.
+- Timed hover regression passed at 4.8 seconds (medium only), 5.1 seconds (large), and on
+  single click (immediate large). See [technical/testing.md](./technical/testing.md).
 
 ## Stale Or Placeholder Areas
 
-- All scaffold placeholders under `requirements/`, `technical/`, `implementation/`,
-  `traceability/`, `analysis/`, `changes/`, `sources/`, and `intake/` are untouched.
+- Several requirements, deployment, security, sources, intake, and analysis scaffolds have
+  not yet been populated. The architecture, codebase-map, testing, and current-plan pages
+  are no longer placeholders.
 
 ## Last Scan
 
-- None captured yet. The init workflow deliberately does not run a repository scan.
+- No full repository scan captured. The 2026-11-22 update was a targeted synchronization
+  of the liquid-glass rendering, configuration, and hover-interaction source paths.
