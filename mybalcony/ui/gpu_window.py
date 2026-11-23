@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtOpenGL
 
-from .gpu_widget import _VERTEX, _FRAGMENT
+from .gpu_widget import _VERTEX, _FRAGMENT, SeparableBlur, center_blur_radius
 
 
 class NativeGlassWindow(QtOpenGL.QOpenGLWindow):
@@ -26,6 +26,7 @@ class NativeGlassWindow(QtOpenGL.QOpenGLWindow):
         self._textures = {}
         self._uniforms = {}
         self.program = None
+        self.blur = SeparableBlur()
 
     def initializeGL(self):
         from OpenGL import GL
@@ -34,10 +35,11 @@ class NativeGlassWindow(QtOpenGL.QOpenGLWindow):
             shaders.compileShader(_VERTEX, shaders.GL_VERTEX_SHADER),
             shaders.compileShader(_FRAGMENT, shaders.GL_FRAGMENT_SHADER),
         )
+        self.blur.initialize()
         self.vao = GL.glGenVertexArrays(1)
         GL.glBindVertexArray(self.vao)
-        self._textures = {"hi": GL.glGenTextures(1), "tiny": GL.glGenTextures(1)}
-        for texture in self._textures.values():
+        self._textures = {"bg": GL.glGenTextures(1)}
+        for key, texture in self._textures.items():
             GL.glBindTexture(GL.GL_TEXTURE_2D, texture)
             for name, value in ((GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR),
                                 (GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR),
@@ -86,19 +88,22 @@ class NativeGlassWindow(QtOpenGL.QOpenGLWindow):
         GL.glClearColor(0, 0, 0, 0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT)
         backdrop = self.island.backdrop
-        tiny, rect, _ = backdrop.state
-        hi, hi_rect, sharp = backdrop.hi, backdrop.hi_rect, backdrop._sharp
-        if tiny is None or hi is None or sharp is None or hi_rect.isEmpty():
+        hi, hi_rect = backdrop.hi, backdrop.hi_rect
+        if hi is None or hi_rect.isEmpty():
             return
-        self._upload("hi", hi)
-        self._upload("tiny", sharp)
-        self._draw_lens(tiny, rect, hi_rect)
+        self._upload("bg", hi)
+        radius = center_blur_radius(hi, hi_rect)
+        blurred = self.blur.blur(self._textures["bg"], hi.width(), hi.height(), radius)
+        self._draw_lens(hi_rect, blurred)
 
-    def _draw_lens(self, tiny, rect, hi_rect):
+    def _draw_lens(self, hi_rect, blurred_texture):
         from OpenGL import GL
         from .island import panel_radius
         island = self.island
-        shape = island.path.boundingRect()
+        # 用本体矩形而不是 path.boundingRect()：贴边时液桥会让后者左右各多出一个
+        # fillet（约 13px），SDF 就跟着画到边框外——这正是"左右折射带超出"的来源。
+        # body 是纯圆角矩形，四边都精确对齐前景描边的边框。
+        shape = island.body
         if shape.isEmpty():
             return
         global_shape = shape.translated(QtCore.QPointF(island._win_origin))
@@ -114,11 +119,11 @@ class NativeGlassWindow(QtOpenGL.QOpenGLWindow):
         GL.glDisable(GL.GL_DEPTH_TEST)
         GL.glUseProgram(self.program)
         GL.glActiveTexture(GL.GL_TEXTURE0)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, self._textures["hi"])
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self._textures["bg"])
+        GL.glUniform1i(self._uniform("bgTex"), 0)
         GL.glActiveTexture(GL.GL_TEXTURE1)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, self._textures["tiny"])
-        GL.glUniform1i(self._uniform("hiTex"), 0)
-        GL.glUniform1i(self._uniform("tinyTex"), 1)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, blurred_texture)
+        GL.glUniform1i(self._uniform("blurredTex"), 1)
         GL.glUniform1f(self._uniform("useForeground"), 0.0)
         GL.glUniform2f(self._uniform("viewportSize"), width, height)
         GL.glUniform1f(self._uniform("deviceRatio"), dpr)
@@ -126,12 +131,15 @@ class NativeGlassWindow(QtOpenGL.QOpenGLWindow):
         GL.glUniform2f(self._uniform("bodyGlobal"), global_center.x(), global_center.y())
         GL.glUniform2f(self._uniform("halfSize"), hw, hh)
         GL.glUniform1f(self._uniform("cornerRadius"), panel_radius(shape.width(), shape.height()))
-        GL.glUniform1f(self._uniform("thickness"), max(2.0, min(hw, hh) * 0.10))
-        GL.glUniform1f(self._uniform("amplitude"), 0.68)
+        # 位移幅度仍由 thickness 控制（保持原折射手感）；bandWidth 只决定折射带往内铺多宽。
+        # 往内扩宽到约 2×：让折射/饱和/彩边在边框内铺得更开，最外沿仍钉在 sd=0 的边框上。
+        thickness = min(12.0, max(2.0, min(hw, hh) * 0.30))
+        GL.glUniform1f(self._uniform("thickness"), thickness)
+        GL.glUniform1f(self._uniform("bandWidth"), min(45.0, max(9.0, thickness * 3.6)))
+        GL.glUniform1f(self._uniform("amplitude"), 1.2)
+        GL.glUniform1f(self._uniform("dispersion"), 0.0)
         GL.glUniform1f(self._uniform("lensScale"), 1.0)
         GL.glUniform1f(self._uniform("ringFade"), 1.25)
-        GL.glUniform4f(self._uniform("tinyRect"), rect.x(), rect.y(), rect.width(), rect.height())
         GL.glUniform4f(self._uniform("hiRect"), hi_rect.x(), hi_rect.y(), hi_rect.width(), hi_rect.height())
-        GL.glUniform2f(self._uniform("tinyTexel"), 1.0 / tiny.width(), 1.0 / tiny.height())
         GL.glBindVertexArray(self.vao)
         GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)

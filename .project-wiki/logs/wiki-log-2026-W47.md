@@ -50,3 +50,70 @@ architectures. No new requirement IDs or unsupported claims were introduced.
 
 Questions: No new open questions. Existing placeholder open-questions page remains unchanged.
 Alerts: None captured.
+
+## [2026-11-22] update | WLOG-20261122-002 | Small/medium GPU fast path and liquid theme synchronized
+
+Changed:
+
+- [technical/architecture.md](../technical/architecture.md) — Frame Scheduling now covers the
+  native-GPU settled fast path for all three island states and the lifted collapsed capture
+  clamp, with explicit fallback boundaries.
+- [technical/codebase-map.md](../technical/codebase-map.md) — documented `_gpu_active()`,
+  `_compact_cursor_far()`, collapsed capture pacing, `compact.busy()`, the liquid palette/font
+  and QSS `font_css()` callers; added `theme.py`, `liquid.py`, `lookup.py` source paths.
+- [technical/testing.md](../technical/testing.md) — added the 67/67 production-method logic
+  regression, theme smoke check, and the pending real-FPS/optical/interaction items.
+- [implementation/current-plan.md](../implementation/current-plan.md) — recorded the completed
+  fast-path/theme changes and pending reference-machine verification.
+- [changes/CHANGELOG.md](../changes/CHANGELOG.md) — added the 2026-11-22 small/medium GPU and
+  theme entry.
+- [STATUS.md](../STATUS.md) — current focus, verification snapshot, and recent updates revised.
+- [traceability/code-map.md](../traceability/code-map.md) and
+  [change-impact-map.md](../traceability/change-impact-map.md) — linked the new behaviors,
+  source paths, verification, and fallback boundaries.
+- [REGISTRY.yml](../REGISTRY.yml) — source paths refreshed for the touched technical records.
+
+Summary: Automatic post-implementation synchronization after two related code changes. The
+collapsed/medium islands now reuse the verified native-GPU fast path and capture cadence, and
+liquid-glass body text was restyled white with PingFang SC. The QA result is a logic-level
+regression against production methods, not a real-FPS measurement; reference-machine checks
+remain explicitly pending. No requirement IDs or unsupported performance claims introduced.
+
+Questions: No new open questions; the theme restyle is recorded as observed implementation
+behavior, not an invented product requirement.
+Alerts: None captured.
+
+## [2026-11-22] update | WLOG-20261122-003 | Foreground accents, lyric repaint, and outlined text synchronized
+
+Changed:
+
+- [technical/architecture.md](../technical/architecture.md) — added the foreground repaint gate
+  (`_foreground_animating()`), the expanded specular-frame guard, the GPU foreground optical
+  accents, and the liquid outlined-text model with its QSS drop-shadow fallback.
+- [technical/codebase-map.md](../technical/codebase-map.md) — documented `_gpu_liquid_accents()`,
+  `_foreground_animating()`, `theme.outlined_text()`, `apply_qss_text_shadow()`, the body-text
+  call sites, and the newly touched source paths.
+- [technical/testing.md](../technical/testing.md) — recorded the 69/69 production-method logic
+  regression for the island changes, the 47/47 outlined-text verification, and the pending
+  real-machine checks.
+- [implementation/current-plan.md](../implementation/current-plan.md) — appended the three
+  completed changes and their source paths.
+- [changes/CHANGELOG.md](../changes/CHANGELOG.md) — added the foreground-accent, lyric-repaint,
+  and outlined-text entry.
+- [STATUS.md](../STATUS.md) — current focus, recent updates, and verification snapshot revised.
+- [traceability/code-map.md](../traceability/code-map.md) and
+  [change-impact-map.md](../traceability/change-impact-map.md) — linked the new behaviors,
+  sources, verification, and fallback/regression boundaries.
+- [REGISTRY.yml](../REGISTRY.yml) — source paths refreshed for the touched technical records.
+
+Summary: Automatic post-implementation synchronization after three user-requested changes:
+give the expanded GPU island menu-level glass accents, fix frozen shape-invariant foreground
+animation (collapsed lyric sweep), and give liquid body text a black stroke plus light shadow.
+Two independent QA runs passed (69/69 island logic, 47/47 outlined text), both logic/pixel-level
+rather than real-FPS measurements; reference-machine FPS, optical, and interaction checks remain
+explicitly pending. Two non-blocking findings were fixed before this sync: a `not self.expanded`
+guard for fast cursor exits during the expanded specular window, and a liquid-only branch in
+`home.py` `CoverTitle` to preserve the original non-liquid glow. No requirement IDs or
+unsupported performance claims introduced.
+
+Questions: No new open questions. Alerts: None captured.

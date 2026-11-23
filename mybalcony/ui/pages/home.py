@@ -63,9 +63,9 @@ class Progress(QtWidgets.QWidget, Themed):
             p.drawRoundedRect(QtCore.QRectF(0, y - th / 2, max(th, r.width() * cur / self.dur), th), th / 2, th / 2)
         p.setFont(ui_font(10.5, num=True))
         p.setPen(theme.text3())
-        p.drawText(QtCore.QRectF(0, 10, 60, 12), Qt.AlignmentFlag.AlignLeft, fmt_time(cur))
+        theme.outlined_text(p, QtCore.QRectF(0, 10, 60, 12), Qt.AlignmentFlag.AlignLeft, fmt_time(cur))
         if self.dur > 0:
-            p.drawText(QtCore.QRectF(r.width() - 60, 10, 60, 12), Qt.AlignmentFlag.AlignRight, fmt_time(self.dur))
+            theme.outlined_text(p, QtCore.QRectF(r.width() - 60, 10, 60, 12), Qt.AlignmentFlag.AlignRight, fmt_time(self.dur))
 
 
 class CoverView(QtWidgets.QWidget):
@@ -225,6 +225,10 @@ class CoverTitle(QtWidgets.QWidget):
         tw = fm.horizontalAdvance(text) + 20
         tr = QtCore.QRectF((W_ - tw) / 2, cr.bottom() + 2, tw, fm.height() + 3)
         p.setFont(f)
+        if theme.liquid:
+            p.setPen(theme.text())
+            theme.outlined_text(p, tr, Qt.AlignmentFlag.AlignCenter, text)
+            return
         sh = QtGui.QColor(0, 0, 0, 120) if theme.dark else QtGui.QColor(255, 255, 255, 170)
         p.setPen(sh)
         for dx, dy in ((0, 1), (1, 0), (-1, 0), (0, -1)):
@@ -362,7 +366,7 @@ class Action(Hoverable):
         p.drawText(QtCore.QRectF(r.x(), r.y() + 3, r.width(), 24), Qt.AlignmentFlag.AlignCenter, self.glyph)
         p.setFont(ui_font(11.5, W.DemiBold))
         p.setPen(col)
-        p.drawText(QtCore.QRectF(r.x(), r.y() + 28, r.width(), 17), Qt.AlignmentFlag.AlignCenter, self.title)
+        theme.outlined_text(p, QtCore.QRectF(r.x(), r.y() + 28, r.width(), 17), Qt.AlignmentFlag.AlignCenter, self.title)
 
 
 _icon_provider = None
@@ -454,7 +458,7 @@ class LaunchIcon(Hoverable):
         else:
             p.setFont(ui_font(15, W.Bold))
             p.setPen(theme.text(0.8))
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, (self.item.get("name") or "?")[:1])
+            theme.outlined_text(p, r, Qt.AlignmentFlag.AlignCenter, (self.item.get("name") or "?")[:1])
 
 
 class PetWidget(QtWidgets.QWidget):
@@ -633,14 +637,14 @@ class AppTile(Hoverable):
         p.drawText(cr, Qt.AlignmentFlag.AlignCenter, self.glyph)
         p.setFont(ui_font(13, W.DemiBold))
         p.setPen(theme.text())
-        p.drawText(QtCore.QRectF(cr.right() + 8, cr.y(), 120, 30), Qt.AlignmentFlag.AlignVCenter, self.name)
+        theme.outlined_text(p, QtCore.QRectF(cr.right() + 8, cr.y(), 120, 30), Qt.AlignmentFlag.AlignVCenter, self.name)
         p.setFont(ui_font(22, W.Bold, num=True))
         p.setPen(col if self.count else theme.text3())
-        p.drawText(QtCore.QRectF(r.x() + 14, r.y() + 46, r.width() - 28, 30), Qt.AlignmentFlag.AlignVCenter,
+        theme.outlined_text(p, QtCore.QRectF(r.x() + 14, r.y() + 46, r.width() - 28, 30), Qt.AlignmentFlag.AlignVCenter,
                    str(self.count) if self.count else "0")
         p.setFont(ui_font(11))
         p.setPen(theme.text3())
-        p.drawText(QtCore.QRectF(r.x() + 14, r.y() + 46, r.width() - 26, 30),
+        theme.outlined_text(p, QtCore.QRectF(r.x() + 14, r.y() + 46, r.width() - 26, 30),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                    self.last or "")
 
@@ -661,7 +665,7 @@ class HistoryList(QtWidgets.QWidget, Themed):
         if not self.rows:
             p.setFont(ui_font(12))
             p.setPen(theme.text3())
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "暂无")
+            theme.outlined_text(p, self.rect(), Qt.AlignmentFlag.AlignCenter, "暂无")
             return
         for i, r in enumerate(self.rows):
             y = i * 30
@@ -671,16 +675,16 @@ class HistoryList(QtWidgets.QWidget, Themed):
             p.drawEllipse(QtCore.QPointF(10, y + 15), 4, 4)
             p.setFont(ui_font(12.5, W.Medium))
             p.setPen(theme.text())
-            p.drawText(QtCore.QRectF(24, y, 80, 30), Qt.AlignmentFlag.AlignVCenter, r.get("name", ""))
+            theme.outlined_text(p, QtCore.QRectF(24, y, 80, 30), Qt.AlignmentFlag.AlignVCenter, r.get("name", ""))
             kind = r.get("kind")
             desc = "新邮件" if kind == "mail" else (f"{r['sender']} 发来消息" if r.get("sender") else "新消息")
             p.setFont(ui_font(12.5))
             p.setPen(theme.text2())
-            p.drawText(QtCore.QRectF(100, y, self.width() - 170, 30), Qt.AlignmentFlag.AlignVCenter,
+            theme.outlined_text(p, QtCore.QRectF(100, y, self.width() - 170, 30), Qt.AlignmentFlag.AlignVCenter,
                        QtGui.QFontMetrics(p.font()).elidedText(desc, Qt.TextElideMode.ElideRight, self.width() - 170))
             p.setFont(ui_font(11.5, num=True))
             p.setPen(theme.text3())
-            p.drawText(QtCore.QRectF(self.width() - 64, y, 60, 30), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+            theme.outlined_text(p, QtCore.QRectF(self.width() - 64, y, 60, 30), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                        time.strftime("%H:%M", time.localtime(r.get("time", 0))))
 
 

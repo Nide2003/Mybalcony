@@ -672,10 +672,10 @@ class CompactView:
         bot = QtCore.QRectF(x, cy - 3, w, 24)
         p.setFont(fj)
         p.setPen(theme.text(0.62 * a))
-        p.drawText(top, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter, jp)
+        theme.outlined_text(p, top, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter, jp)
         p.setFont(fz)
         p.setPen(theme.text(a))
-        p.drawText(bot, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter, zh)
+        theme.outlined_text(p, bot, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter, zh)
 
     def _badges_w(self) -> float:
         return 12 + 12 * sum(1 for v in self.badges.values() if v)
@@ -687,7 +687,7 @@ class CompactView:
         p.drawText(QtCore.QRectF(r.x() + 16, r.y(), 22, r.height()), Qt.AlignmentFlag.AlignCenter, G.MUSIC)
         p.setFont(ui_font(13, W.Medium))
         p.setPen(theme.text2(a))
-        p.drawText(QtCore.QRectF(r.x() + 46, r.y(), r.width() - 60, r.height()),
+        theme.outlined_text(p, QtCore.QRectF(r.x() + 46, r.y(), r.width() - 60, r.height()),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "未在播放")
         _ = cy
 
@@ -729,7 +729,7 @@ class CompactView:
         p.setFont(ui_font(15, W.DemiBold, num=True))
         p.setPen(theme.text(a))
         txt = time.strftime("%H:%M", now)
-        p.drawText(QtCore.QRectF(r.x() + 18, r.y(), 80, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, txt)
+        theme.outlined_text(p, QtCore.QRectF(r.x() + 18, r.y(), 80, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, txt)
         x = r.right() - 16
         x = self._badges(p, x, cy, a) - 4
         if self.weather:
@@ -739,7 +739,7 @@ class CompactView:
             p.setPen(theme.text2(a))
             fm = QtGui.QFontMetrics(p.font())
             tw = fm.horizontalAdvance(temp)
-            p.drawText(QtCore.QRectF(x - tw, r.y(), tw + 2, r.height()), Qt.AlignmentFlag.AlignVCenter, temp)
+            theme.outlined_text(p, QtCore.QRectF(x - tw, r.y(), tw + 2, r.height()), Qt.AlignmentFlag.AlignVCenter, temp)
             f = icon_font(13)
             if fam:
                 f.setFamilies([fam, "Segoe Fluent Icons", "Segoe UI Symbol"])
@@ -821,7 +821,7 @@ class CompactView:
             p.setPen(self._sweep_pen(a, tx + tw / 2 - half, tx + tw / 2 + half, self._lyr_progress(idx)))
         else:
             p.setPen(theme.text(a))
-        p.drawText(QtCore.QRectF(tx, r.y() + self._pop_step(), tw, r.height()),
+        theme.outlined_text(p, QtCore.QRectF(tx, r.y() + self._pop_step(), tw, r.height()),
                    Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, shown)
 
     def _paint_media(self, p, r, a):
@@ -950,7 +950,7 @@ class CompactView:
                                          self._lyr_progress(idx)))
             else:
                 p.setPen(theme.text(al * fade))
-            p.drawText(QtCore.QRectF(tx, y - LYR_ROW / 2.0, tw, LYR_ROW),
+            theme.outlined_text(p, QtCore.QRectF(tx, y - LYR_ROW / 2.0, tw, LYR_ROW),
                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, shown)
         p.restore()
 
@@ -963,7 +963,7 @@ class CompactView:
         p.setClipRect(QtCore.QRectF(tx, r.y(), tw, r.height()))
         p.setPen(theme.text(a))
         if full <= tw:
-            p.drawText(QtCore.QRectF(tx, r.y(), tw, r.height()),
+            theme.outlined_text(p, QtCore.QRectF(tx, r.y(), tw, r.height()),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
         else:
             gap = 40
@@ -971,7 +971,7 @@ class CompactView:
             ph = time.monotonic() % (period + 2.0)
             off = 0 if ph < 2.0 else (ph - 2.0) * 34.0
             for k in (0, 1):
-                p.drawText(QtCore.QRectF(tx - off + k * (full + gap), r.y(), full + 4, r.height()),
+                theme.outlined_text(p, QtCore.QRectF(tx - off + k * (full + gap), r.y(), full + 4, r.height()),
                            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
         p.restore()
 
@@ -1013,7 +1013,7 @@ class CompactView:
             p.drawRoundedRect(QtCore.QRectF(x, cy - 3, max(6, bw * v * enter), 6), 3, 3)
             p.setFont(ui_font(12.5, W.DemiBold, num=True))
             p.setPen(theme.text(a))
-            p.drawText(QtCore.QRectF(r.right() - 48, r.y(), 34, r.height()),
+            theme.outlined_text(p, QtCore.QRectF(r.right() - 48, r.y(), 34, r.height()),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                        "静音" if act.get("muted") else f"{round(v * 100)}")
             return
@@ -1025,7 +1025,7 @@ class CompactView:
         avail = r.right() - 14 - x
         tc = act.get("title_color")
         p.setPen(QtGui.QColor(tc) if tc else theme.text(a))
-        p.drawText(QtCore.QRectF(x, r.y(), min(tw + 2, avail), r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+        theme.outlined_text(p, QtCore.QRectF(x, r.y(), min(tw + 2, avail), r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                    fm.elidedText(title, Qt.TextElideMode.ElideRight, int(avail)))
         if sub and tw + 10 < avail:
             p.setFont(ui_font(12))
@@ -1033,6 +1033,6 @@ class CompactView:
             sc = act.get("sub_color")
             p.setPen(QtGui.QColor(sc) if sc else theme.text2(a))
             sw = avail - tw - 10
-            p.drawText(QtCore.QRectF(x + tw + 10, r.y(), sw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            theme.outlined_text(p, QtCore.QRectF(x + tw + 10, r.y(), sw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                        fm2.elidedText(sub, Qt.TextElideMode.ElideRight, int(sw)))
 

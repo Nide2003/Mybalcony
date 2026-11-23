@@ -68,7 +68,7 @@ class StockList(QtWidgets.QWidget, Themed):
         if not self.rows:
             p.setFont(ui_font(12))
             p.setPen(theme.text3())
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "自选为空，点右上角 + 添加")
+            theme.outlined_text(p, self.rect(), Qt.AlignmentFlag.AlignCenter, "自选为空，点右上角 + 添加")
             return
         w = self.width()
         for i, s in enumerate(self.rows):
@@ -80,14 +80,14 @@ class StockList(QtWidgets.QWidget, Themed):
                 p.drawRoundedRect(r, 12, 12)
             p.setFont(ui_font(13, W.Medium))
             p.setPen(theme.text())
-            p.drawText(QtCore.QRectF(12, y, 150, self.ROW), Qt.AlignmentFlag.AlignVCenter, s.get("name") or s.get("code"))
+            theme.outlined_text(p, QtCore.QRectF(12, y, 150, self.ROW), Qt.AlignmentFlag.AlignVCenter, s.get("name") or s.get("code"))
             p.setFont(ui_font(10.5, num=True))
             p.setPen(theme.text3())
-            p.drawText(QtCore.QRectF(150, y, 120, self.ROW), Qt.AlignmentFlag.AlignVCenter, s.get("code", ""))
+            theme.outlined_text(p, QtCore.QRectF(150, y, 120, self.ROW), Qt.AlignmentFlag.AlignVCenter, s.get("code", ""))
             price, pct = s.get("price"), s.get("pct")
             p.setFont(ui_font(13.5, W.DemiBold, num=True))
             p.setPen(theme.text())
-            p.drawText(QtCore.QRectF(w - 210, y, 110, self.ROW), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+            theme.outlined_text(p, QtCore.QRectF(w - 210, y, 110, self.ROW), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                        "--" if price is None else (f"{price:.3f}" if price < 10 else f"{price:.2f}"))
             # 涨跌幅胶囊
             pr = QtCore.QRectF(w - 88, y + 7, 78, self.ROW - 14)
@@ -99,7 +99,7 @@ class StockList(QtWidgets.QWidget, Themed):
             p.drawRoundedRect(pr, pr.height() / 2, pr.height() / 2)
             p.setPen(col)
             p.setFont(ui_font(12.5, W.DemiBold, num=True))
-            p.drawText(pr, Qt.AlignmentFlag.AlignCenter, "--" if pct is None else f"{pct:+.2f}%")
+            theme.outlined_text(p, pr, Qt.AlignmentFlag.AlignCenter, "--" if pct is None else f"{pct:+.2f}%")
 
 
 class StocksPage(Page):
@@ -296,7 +296,7 @@ class Hourly(QtWidgets.QWidget, Themed):
             x = i * cw
             p.setFont(ui_font(11, num=True))
             p.setPen(theme.text3())
-            p.drawText(QtCore.QRectF(x, 0, cw, 16), Qt.AlignmentFlag.AlignCenter,
+            theme.outlined_text(p, QtCore.QRectF(x, 0, cw, 16), Qt.AlignmentFlag.AlignCenter,
                        (dt.datetime.fromtimestamp(it.get("time", 0) + self.tz, dt.timezone.utc) if self.tz is not None
                         else dt.datetime.fromtimestamp(it.get("time", 0))).strftime("%H时"))
             g, fam = weather_glyph(it.get("icon"))
@@ -308,12 +308,12 @@ class Hourly(QtWidgets.QWidget, Themed):
             p.drawText(QtCore.QRectF(x, 18, cw, 28), Qt.AlignmentFlag.AlignCenter, g)
             p.setFont(ui_font(13, W.DemiBold, num=True))
             p.setPen(theme.text())
-            p.drawText(QtCore.QRectF(x, 46, cw, 16), Qt.AlignmentFlag.AlignCenter, f"{round(it.get('temp', 0))}°")
+            theme.outlined_text(p, QtCore.QRectF(x, 46, cw, 16), Qt.AlignmentFlag.AlignCenter, f"{round(it.get('temp', 0))}°")
             pop = it.get("pop") or 0
             if pop >= 0.2:
                 p.setFont(ui_font(10, num=True))
                 p.setPen(QtGui.QColor("#4f9cff"))
-                p.drawText(QtCore.QRectF(x, 62, cw, 14), Qt.AlignmentFlag.AlignCenter, f"{round(pop * 100)}%")
+                theme.outlined_text(p, QtCore.QRectF(x, 62, cw, 14), Qt.AlignmentFlag.AlignCenter, f"{round(pop * 100)}%")
 
 
 class Daily(QtWidgets.QWidget, Themed):
@@ -345,7 +345,7 @@ class Daily(QtWidgets.QWidget, Themed):
                 name = str(d)
             p.setFont(ui_font(12.5, W.Medium))
             p.setPen(theme.text())
-            p.drawText(QtCore.QRectF(0, y, 44, rh), Qt.AlignmentFlag.AlignVCenter, name)
+            theme.outlined_text(p, QtCore.QRectF(0, y, 44, rh), Qt.AlignmentFlag.AlignVCenter, name)
             g, fam = weather_glyph(it.get("icon"))
             f = QtGui.QFont()
             f.setFamilies([fam, "Segoe Fluent Icons", "Segoe UI Symbol"])
@@ -354,9 +354,9 @@ class Daily(QtWidgets.QWidget, Themed):
             p.drawText(QtCore.QRectF(44, y, 26, rh), Qt.AlignmentFlag.AlignCenter, g)
             p.setFont(ui_font(12, num=True))
             p.setPen(theme.text2())
-            p.drawText(QtCore.QRectF(74, y, 30, rh), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, f"{round(it['min'])}°")
+            theme.outlined_text(p, QtCore.QRectF(74, y, 30, rh), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, f"{round(it['min'])}°")
             p.setPen(theme.text())
-            p.drawText(QtCore.QRectF(self.width() - 32, y, 32, rh), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+            theme.outlined_text(p, QtCore.QRectF(self.width() - 32, y, 32, rh), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                        f"{round(it['max'])}°")
             bx, bw = 112, self.width() - 112 - 40
             span = max(1e-6, hi - lo)
@@ -405,11 +405,12 @@ def paint_chip(p, r, name: str, temp: str, glyph, selected: bool, default: bool,
     p.setPen(theme.pill_text() if selected else theme.text(0.75))
     fm = QtGui.QFontMetrics(p.font())
     x = r.x() + 30
-    p.drawText(QtCore.QRectF(x, r.y(), 200, r.height()), Qt.AlignmentFlag.AlignVCenter, name)
+    theme.outlined_text(p, QtCore.QRectF(x, r.y(), 200, r.height()), Qt.AlignmentFlag.AlignVCenter, name,
+                        outline=not selected)   # 选中项在浅底 pill 上，保持原色
     x += fm.horizontalAdvance(name) + 6
     p.setFont(ui_font(12, W.Medium, num=True))
     p.setPen(theme.text2())
-    p.drawText(QtCore.QRectF(x, r.y(), 60, r.height()), Qt.AlignmentFlag.AlignVCenter, temp or "--°")
+    theme.outlined_text(p, QtCore.QRectF(x, r.y(), 60, r.height()), Qt.AlignmentFlag.AlignVCenter, temp or "--°")
     if default:
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(theme.on_color())
@@ -946,10 +947,10 @@ class Facts(QtWidgets.QWidget, Themed):
             x, y = (i % cols) * cw, (i // cols) * rh
             p.setFont(ui_font(11))
             p.setPen(theme.text3())
-            p.drawText(QtCore.QRectF(x, y, 44, rh), Qt.AlignmentFlag.AlignVCenter, k)
+            theme.outlined_text(p, QtCore.QRectF(x, y, 44, rh), Qt.AlignmentFlag.AlignVCenter, k)
             p.setFont(ui_font(12, W.Medium, num=True))
             p.setPen(theme.text())
-            p.drawText(QtCore.QRectF(x + 44, y, cw - 46, rh), Qt.AlignmentFlag.AlignVCenter, v)
+            theme.outlined_text(p, QtCore.QRectF(x + 44, y, cw - 46, rh), Qt.AlignmentFlag.AlignVCenter, v)
 
 
 _ = (cfg, clamp)

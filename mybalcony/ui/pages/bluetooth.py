@@ -118,13 +118,13 @@ class DeviceRow(QtWidgets.QWidget, Themed):
         p.setFont(ui_font(12.5, W.Medium))
         p.setPen(theme.text(0.94 if dev.get("connected") else 0.7))
         fm = QtGui.QFontMetrics(p.font())
-        p.drawText(QtCore.QRectF(tx, r.top() + 5, tw, 18),
+        theme.outlined_text(p, QtCore.QRectF(tx, r.top() + 5, tw, 18),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    fm.elidedText(dev.get("name") or "", Qt.TextElideMode.ElideRight, int(tw)))
         p.setFont(ui_font(10.5, W.Normal))
         p.setPen(theme.text3(0.95))
         fm2 = QtGui.QFontMetrics(p.font())
-        p.drawText(QtCore.QRectF(tx, r.bottom() - 19, tw, 14),
+        theme.outlined_text(p, QtCore.QRectF(tx, r.bottom() - 19, tw, 14),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    fm2.elidedText(sub, Qt.TextElideMode.ElideRight, int(tw)))
 
@@ -138,7 +138,7 @@ class DeviceRow(QtWidgets.QWidget, Themed):
         p.setPen(_level_color(lvl))
         val = f"{lvl}%"
         vw = QtGui.QFontMetrics(p.font()).horizontalAdvance(val)
-        p.drawText(QtCore.QRectF(r.right() - 14 - vw, r.top(), vw + 2, r.height()),
+        theme.outlined_text(p, QtCore.QRectF(r.right() - 14 - vw, r.top(), vw + 2, r.height()),
                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, val)
         gw, gh = 24.0, 12.0
         draw_battery(p, QtCore.QRectF(r.right() - 14 - vw - 8 - gw, r.center().y() - gh / 2, gw, gh), lvl)
@@ -188,29 +188,78 @@ class SystemBatteryCard(QtWidgets.QWidget, Themed):
         tx = r.left() + 16 + gw + 12
         p.setFont(ui_font(13, W.DemiBold))
         p.setPen(theme.text(0.96))
-        p.drawText(QtCore.QRectF(tx, r.top() + 9, 260, 18),
+        theme.outlined_text(p, QtCore.QRectF(tx, r.top() + 9, 260, 18),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "本机电池")
         p.setFont(ui_font(10.5, W.Normal))
         p.setPen(theme.text3(0.95))
-        p.drawText(QtCore.QRectF(tx, r.bottom() - 24, 260, 15),
+        theme.outlined_text(p, QtCore.QRectF(tx, r.bottom() - 24, 260, 15),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._status_text())
 
         if pct is None:
             p.setFont(ui_font(18, W.Light))
             p.setPen(theme.text3(0.85))
-            p.drawText(QtCore.QRectF(r.right() - 100, r.top(), 84, r.height()),
+            theme.outlined_text(p, QtCore.QRectF(r.right() - 100, r.top(), 84, r.height()),
                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "—")
             return
         p.setFont(ui_font(24, W.Light, num=True))
         p.setPen(_level_color(int(pct)))
         val = f"{int(pct)}%"
         vw = QtGui.QFontMetrics(p.font()).horizontalAdvance(val)
-        p.drawText(QtCore.QRectF(r.right() - 18 - vw, r.top(), vw + 2, r.height()),
+        theme.outlined_text(p, QtCore.QRectF(r.right() - 18 - vw, r.top(), vw + 2, r.height()),
                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, val)
+
+
+class _EdgeFade(QtWidgets.QWidget):
+    """滚动区底边的柔和淡出层（电量页专用）。
+
+    透明分层窗口上不能用 ``QGraphicsOpacityEffect``：带效果的子控件会单独重绘，
+    出现没有玻璃底的帧。也不碰 ``island.py`` 的二值 ``setMask``（那正是硬裁切的来源）。
+    本层在**内容层**用 ``QPainter.CompositionMode_DestinationOut`` 画一道纵向 alpha
+    渐变，把已经画好的设备行按渐变擦成透明，露出底下的玻璃——这就是「淡出到玻璃」。
+
+    仅在液态玻璃 + 原生 GPU 玻璃层可见时启用：液态主题的玻璃底是独立的
+    ``NativeGlassWindow`` 原生窗口，不在本窗口的 backing store 里，擦掉前景正好露出
+    它；非液态主题的玻璃底与前景同处一张 backing store，DestinationOut 会把玻璃一起
+    擦掉（露出桌面、失去玻璃底），因此那种情况宁可只保留底部留白，绝不冒黑块风险。
+
+    鼠标事件完全穿透（``WA_TransparentForMouseEvents``），不影响滚动 / 悬停 / tooltip。
+    """
+
+    H = 10  # 淡出带高度（px）；必须小于 BatteryPage._BOTTOM_SPACER，滚到底时不擦最后卡片
+
+    def __init__(self, parent: QtWidgets.QWidget):
+        super().__init__(parent)
+        # 只穿透鼠标、不设 WA_TranslucentBackground：保持与兄弟控件共用同一张
+        # backing store，DestinationOut 才能擦到已经画好的设备行像素。
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAutoFillBackground(False)
+
+    def can_fade(self) -> bool:
+        """液态玻璃 + 原生 GPU 玻璃层可见时，底下才有一层真玻璃可供淡出。"""
+        if not theme.liquid:
+            return False
+        gpu = getattr(self.window(), "gpu_view", None)
+        return bool(gpu is not None and gpu.isVisible())
+
+    def paintEvent(self, e) -> None:
+        if not self.can_fade() or self.height() <= 0:
+            return
+        p = QtGui.QPainter(self)
+        # 上缘不擦（alpha 0），越往下擦得越狠，到面板底边完全透明，露出 GPU 玻璃。
+        grad = QtGui.QLinearGradient(0, 0, 0, self.height())
+        grad.setColorAt(0.0, QtGui.QColor(0, 0, 0, 0))
+        grad.setColorAt(1.0, QtGui.QColor(0, 0, 0, 255))
+        p.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_DestinationOut)
+        p.fillRect(self.rect(), grad)
+        p.end()
 
 
 class BatteryPage(Page):
     key, glyph, title, height = "bat", G.BATTERY, "电量", 372
+    # 底部留白：滚到底时最后一张卡片下缘不与面板底边贴死，圆角不再被切平。
+    # 14px 实测即最后卡片下缘到视口底边的距离，大于 _EdgeFade.H=10，
+    # 因此淡出带只作用于留白区、不会擦到完整显示的最后一张卡片。
+    _BOTTOM_SPACER = 14
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -227,11 +276,15 @@ class BatteryPage(Page):
         self.list = QtWidgets.QWidget()
         self.list_lay = vbox(spacing=6)
         self.list_lay.addStretch(1)          # 只加一次：设备少时也顶着上面排
+        # 底部留白放在 stretch 之后：set_devices 的 insertWidget(i, row) 只会往前插，
+        # 不碰这段 spacer，设备少时列表依旧顶上、设备多时滚到底仍有呼吸空间。
+        self.list_lay.addSpacing(self._BOTTOM_SPACER)
         self.list.setLayout(self.list_lay)
         self.scroll = ScrollArea()
         self.scroll.setWidget(self.list)
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self._install_edge_fade()
 
         self.empty = Label("", 12.5, level=2, align=Qt.AlignmentFlag.AlignCenter, wrap=True)
 
@@ -261,6 +314,45 @@ class BatteryPage(Page):
         self._bat_timer.timeout.connect(self._refresh_sys)
         self._refresh_sys()
         self._bat_timer.start()
+
+    # ---------- 滚动底边淡出（纯视觉，不碰数据 / 定时器） ----------
+    def _install_edge_fade(self) -> None:
+        """在滚动视口底边叠一层淡出遮罩，随视口尺寸与滚动位置更新。
+
+        只挂在电量页自己的 ``scroll.viewport()`` 上：其它页没有这层 widget，零污染；
+        ``ScrollArea`` 通用类也没动，默认行为零变化。
+        """
+        vp = self.scroll.viewport()
+        self._fade = _EdgeFade(vp)
+        self._fade.setGeometry(0, 0, 0, 0)
+        vp.installEventFilter(self)
+        bar = self.scroll.verticalScrollBar()
+        bar.valueChanged.connect(self._update_fade)
+        # 设备增减会改 range 但 value 可能不变；rangeChanged 才能可靠捕获「列表变得可滚动」
+        bar.rangeChanged.connect(self._update_fade)
+        # 液态 ↔ 非液态切换后 can_fade 判定会变，主题信号来了重画一次即可
+        theme.changed.connect(self._fade.update)
+        self._update_fade()
+
+    def _update_fade(self, *_args) -> None:
+        """淡出带贴在 viewport 视觉底边（吸附底边时即靠导航那侧）。
+
+        内容不足以滚动时不显示：避免把整片静止的面板底部擦成透明。
+        """
+        vp = self.scroll.viewport()
+        fade = getattr(self, "_fade", None)
+        if fade is None:
+            return
+        bar = self.scroll.verticalScrollBar()
+        h = fade.H if bar.maximum() > 0 else 0
+        fade.setGeometry(0, max(0, vp.height() - h), max(0, vp.width()), h)
+        if h:
+            fade.update()
+
+    def eventFilter(self, obj, event):
+        if obj is self.scroll.viewport() and event.type() == QtCore.QEvent.Type.Resize:
+            self._update_fade()
+        return super().eventFilter(obj, event)
 
     def _refresh_sys(self):
         self.syscard.set_info(system_battery())

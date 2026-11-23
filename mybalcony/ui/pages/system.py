@@ -142,13 +142,18 @@ class ControlsPage(Page):
         openv.clicked.connect(lambda: ctx.clash.open_app())
         self.card.setLayout(vbox(hbox(self.clash_state, None, self.speed, openv, spacing=6),
                                  hbox(self.mode, None, self.node, spacing=8), spacing=6, margins=(14, 10, 10, 10)))
-        left = vbox(self.vol, self.bri, self.scale_box, self.card, None, spacing=8)
+        sliders = vbox(self.vol, self.bri, self.scale_box, self.card, None, spacing=8)
         for w in (self.card, self.proxy, self.tun):
             w.hide()
+        # 宫格（4 个按钮）在左、3 条滑块在右；两列都定高到宫格高度，顶边/底边对齐，
+        # 不再出现「滑块列比按钮宫格高一截」。
         gw = QtWidgets.QWidget()
         gw.setLayout(grid)
         gw.setFixedSize(TILE * 2 + 15, TILE * 2 + 15)
-        self.setLayout(hbox((left, 1), vbox(None, gw, None), spacing=10))
+        sliders_w = QtWidgets.QWidget()
+        sliders_w.setLayout(sliders)
+        sliders_w.setFixedHeight(gw.height())
+        self.setLayout(hbox(gw, (sliders_w, 1), spacing=10))
         self._sync_height()
 
     def _sync_height(self):
@@ -458,11 +463,11 @@ class WinCard(Hoverable):
         p.setFont(ui_font(12.5, W.Medium))
         p.setPen(theme.text())
         fm = QtGui.QFontMetrics(p.font())
-        p.drawText(QtCore.QRectF(tx, r.y() + 8, tw, 20), Qt.AlignmentFlag.AlignVCenter,
+        theme.outlined_text(p, QtCore.QRectF(tx, r.y() + 8, tw, 20), Qt.AlignmentFlag.AlignVCenter,
                    fm.elidedText(self.info.get("title", ""), Qt.TextElideMode.ElideRight, int(tw)))
         p.setFont(ui_font(10.5))
         p.setPen(theme.text3())
-        p.drawText(QtCore.QRectF(tx, r.y() + 27, tw, 18), Qt.AlignmentFlag.AlignVCenter,
+        theme.outlined_text(p, QtCore.QRectF(tx, r.y() + 27, tw, 18), Qt.AlignmentFlag.AlignVCenter,
                    (self.info.get("exe") or "").removesuffix(".exe"))
         if self._hover.x > 0.05:
             cr = self._close_rect()

@@ -7,7 +7,7 @@ import ctypes
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from .theme import G, W, theme, ui_font
+from .theme import G, W, apply_qss_text_shadow, theme, ui_font
 from .widgets import IconButton, LineEdit, PillButton, hbox, painter, vbox
 
 Qt = QtCore.Qt
@@ -60,8 +60,11 @@ class LookupPopup(QtWidgets.QWidget):
         fg2 = theme.qss_color(theme.text2())
         self.header.setStyleSheet(f"color:{fg};background:transparent")
         self.status.setStyleSheet(f"color:{fg2};background:transparent")
+        apply_qss_text_shadow(self.header)
+        apply_qss_text_shadow(self.status)
+        apply_qss_text_shadow(self.body)
         self.body.setStyleSheet(
-            f"QTextBrowser{{background:transparent;color:{fg};border:none;font-family:'HarmonyOS Sans','Microsoft YaHei UI';font-size:13px}}"
+            f"QTextBrowser{{background:transparent;color:{fg};border:none;font-family:{theme.font_css()};font-size:13px}}"
             "QScrollBar:vertical{width:6px;background:transparent}"
             f"QScrollBar::handle:vertical{{background:{theme.qss_color(theme.text(0.25))};border-radius:3px}}"
             "QScrollBar::add-line,QScrollBar::sub-line{height:0}")

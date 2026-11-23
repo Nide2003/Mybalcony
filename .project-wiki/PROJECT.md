@@ -12,6 +12,10 @@ source_paths:
 - README.md
 - config.example.json
 - mybalcony/app.py
+- mybalcony/ui/island.py
+- mybalcony/ui/gpu_window.py
+- mybalcony/ui/gpu_widget.py
+- mybalcony/core/config.py
 confidence: confirmed
 ---
 

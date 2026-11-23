@@ -6,12 +6,14 @@
 """
 from __future__ import annotations
 
+import re
 import time
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import glass
 from .theme import theme
+from .theme import ui_font as _ui_font
 
 Qt = QtCore.Qt
 
@@ -290,16 +292,171 @@ def paint_panel(p: QtGui.QPainter, widget: QtWidgets.QWidget, rect: QtCore.QRect
     p.restore()
 
 
-# --- QMenu 皮肤 ---
-MENU_QSS = (
-    "QMenu{{background:transparent;border:none;padding:6px;color:{fg};"
-    "font-family:'HarmonyOS Sans','Microsoft YaHei UI';font-size:13px}}"
-    "QMenu::item{{padding:6px 22px 6px 14px;border-radius:9px}}"
-    "QMenu::item:selected{{background:{sel}}}"
-    "QMenu::item:disabled{{color:gray}}"
-    "QMenu::separator{{height:6px;background:transparent}}"
-    "QMenu::indicator{{width:0}}"
-)
+# --- QMenu 皮肤 -----------------------------------------------------------
+# 液态菜单的字不能只靠 QSS：Qt 样式表没有 text-shadow / text-stroke，菜单项文字又是
+# QStyle 画的（不是独立 QLabel），QGraphicsDropShadowEffect 挂不上。这里改用 QProxyStyle
+# 接管 CE_MenuItem —— 但有个必须遵守的前提：**液态菜单的 QSS 里绝不能出现 background**。
+# 实测（PySide6 6.12 / offscreen）：只要 QMenu{background:...} 这条规则存在，
+# QStyleSheetStyle 就会自己包办 CE_MenuItem，ProxyStyle::drawControl 一次都不会被调用；
+# 只有 color / font-family / font-size 时才会把菜单项转发给 base style。
+# 因此 MENU_QSS 只保留字色与字体；底色仍是项目原有的液态玻璃（MenuGlass._paint 的
+# paint_panel），文字由 LiquidMenuStyle 画成白字黑边。
+MENU_QSS = "QMenu{{color:{fg};font-family:{fonts};font-size:13px}}"
+
+LIQUID_MENU_RADIUS = 14.0         # 与 paint_panel 的菜单圆角一致
+LIQUID_MENU_ITEM_RADIUS = 9.0     # 选中高亮的圆角（沿用原 QSS ::item 的 9px）
+LIQUID_MENU_TEXT_PX = 13          # 与 MENU_QSS 的 font-size 一致
+LIQUID_MENU_PAD_LEFT = 14         # 普通项文字左内边距（沿用原 QSS ::item）
+LIQUID_MENU_PAD_RIGHT = 22        # 普通项文字右内边距
+LIQUID_MENU_INDENT = 38           # 有勾选列 / 图标列时，base style 的文字起点
+LIQUID_MENU_ARROW = 14            # 子菜单箭头预留宽度
+LIQUID_MENU_DISABLED = QtGui.QColor(176, 180, 188)   # 禁用项：灰色语义保留，仍描边
+
+
+_MENU_SEL_CACHE: dict = {}
+
+
+def _menu_selection_color() -> QtGui.QColor:
+    """选中高亮：用 palette 里 menu[2] 的原值（含原 alpha），不额外加深。
+
+    QColor 不认识 QSS 的 rgba(...) 字符串，所以手动解析数字；这里只做转换，
+    不修改 palette、也不改色值/透明度（非液态主题共用同一函数入口）。
+    """
+    raw = str(theme.menu_qss()[2])
+    cached = _MENU_SEL_CACHE.get(raw)
+    if cached is not None:
+        return cached
+    nums = [int(x) for x in re.findall(r"\d+", raw)]
+    if len(nums) >= 4:
+        c = QtGui.QColor(nums[0], nums[1], nums[2], nums[3])
+    elif len(nums) == 3:
+        c = QtGui.QColor(nums[0], nums[1], nums[2], 255)
+    else:
+        c = QtGui.QColor(120, 170, 230, 70)   # 液态 palette 原值兜底
+    _MENU_SEL_CACHE[raw] = c
+    return c
+
+
+def _menu_text(text: str) -> str:
+    """QStyle 会吃掉加速键的 '&'，自绘时也要做同样的处理（'&&' 表示一个字面量 '&'）。"""
+    return text.replace("&&", "\x00").replace("&", "").replace("\x00", "&")
+
+
+def _prev_menu_style(m: QtWidgets.QMenu):
+    """记住调用方自己 setStyle 过的 style；QStyleSheetStyle / 应用 style 不必保存。
+
+    QStyleSheetStyle 归 QWidget 所有，setStyle(代理) 时 Qt 会删掉它，保存指针会在
+    undress 时拿到悬空 C++ 对象；这两种情况恢复时只要 setStyle(None) + 还原 QSS 即可。
+    """
+    style = m.style()
+    if style is None:
+        return None
+    app_style = QtWidgets.QApplication.style()
+    if style is app_style or style == app_style:
+        return None
+    if style.metaObject().className() == "QStyleSheetStyle":
+        return None
+    return style
+
+
+class _LiquidMenuStyle(QtWidgets.QProxyStyle):
+    """液态菜单专用代理样式：背景/图标/勾/箭头交给 base style，文字自己用 outlined_text 画。
+
+    实测依据：QSS 只要带 background 规则，QStyleSheetStyle 就完全接管 CE_MenuItem，
+    ProxyStyle 不会被调用；所以 dress() 里给的 QSS 只有 color/font，底色仍走 paint_panel。
+    """
+
+    def __init__(self):
+        # 不传 base：QProxyStyle() 自动以 QApplication.style() 为底，且不会接管其所有权。
+        super().__init__()
+
+    def drawPrimitive(self, element, option, painter, widget=None):  # noqa: N802
+        # 菜单面板玻璃由 MenuGlass._paint 负责；不让 base style 铺一层不透明系统底色。
+        panel = getattr(QtWidgets.QStyle.PrimitiveElement, "PE_PanelMenu", None)
+        frame = getattr(QtWidgets.QStyle.PrimitiveElement, "PE_FrameMenu", None)
+        if element in (panel, frame) and element is not None:
+            return
+        return super().drawPrimitive(element, option, painter, widget)
+
+    def sizeFromContents(self, typ, opt, contentsSize, widget=None):  # noqa: N802
+        if typ == QtWidgets.QStyle.ContentsType.CT_MenuItem:
+            if isinstance(opt, QtWidgets.QStyleOptionMenuItem) and \
+                    opt.menuItemType == QtWidgets.QStyleOptionMenuItem.MenuItemType.Separator:
+                return QtCore.QSize(max(8, contentsSize.width()), 8)
+            # 原 QSS 的 item padding 6px 22px 6px 14px：左右 14+22、上下 6+6。
+            return QtCore.QSize(contentsSize.width() + LIQUID_MENU_PAD_LEFT + LIQUID_MENU_PAD_RIGHT,
+                                max(26, contentsSize.height() + 12))
+        return super().sizeFromContents(typ, opt, contentsSize, widget)
+
+    def drawControl(self, element, option, painter, widget=None):  # noqa: N802
+        if element != QtWidgets.QStyle.ControlElement.CE_MenuItem or \
+                not isinstance(option, QtWidgets.QStyleOptionMenuItem):
+            return super().drawControl(element, option, painter, widget)
+
+        if option.menuItemType == QtWidgets.QStyleOptionMenuItem.MenuItemType.Separator:
+            r = QtCore.QRectF(option.rect)
+            y = r.center().y()
+            painter.save()
+            painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 46), 1.0))
+            painter.drawLine(QtCore.QPointF(r.left() + LIQUID_MENU_PAD_LEFT, y),
+                             QtCore.QPointF(r.right() - LIQUID_MENU_PAD_RIGHT, y))
+            painter.restore()
+            return
+
+        text = _menu_text(option.text)
+        enabled = bool(option.state & QtWidgets.QStyle.StateFlag.State_Enabled)
+        hot = enabled and bool(option.state & (QtWidgets.QStyle.StateFlag.State_Selected |
+                                              QtWidgets.QStyle.StateFlag.State_MouseOver))
+
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        if hot:
+            path = QtGui.QPainterPath()
+            path.addRoundedRect(QtCore.QRectF(option.rect),
+                                LIQUID_MENU_ITEM_RADIUS, LIQUID_MENU_ITEM_RADIUS)
+            painter.fillPath(path, _menu_selection_color())
+        painter.restore()
+
+        # 让 base style 画背景之外的一切（图标 / ✓ / 子菜单箭头），但**不画文字**：
+        # text 置空后 base style 完全没有字形输出（offscreen 像素比对验证过），不会重复画字。
+        base_opt = QtWidgets.QStyleOptionMenuItem(option)
+        base_opt.text = ""
+        base_opt.state = option.state & ~(QtWidgets.QStyle.StateFlag.State_Selected |
+                                          QtWidgets.QStyle.StateFlag.State_MouseOver)
+        pal = QtGui.QPalette(base_opt.palette)
+        for role in (QtGui.QPalette.ColorRole.Text, QtGui.QPalette.ColorRole.WindowText,
+                     QtGui.QPalette.ColorRole.HighlightedText):
+            pal.setColor(role, theme.text())
+        base_opt.palette = pal
+        super().drawControl(element, base_opt, painter, widget)
+
+        if not text:
+            return
+        left = option.rect.left() + LIQUID_MENU_PAD_LEFT
+        if (not option.icon.isNull() or
+                option.checkType != QtWidgets.QStyleOptionMenuItem.CheckType.NotCheckable or
+                option.menuHasCheckableItems):
+            # base style 在 12..27 画图标 / 勾选列，文字从 38 起才不会压上去
+            left = option.rect.left() + LIQUID_MENU_INDENT
+        right = option.rect.right() - LIQUID_MENU_PAD_RIGHT
+        if option.menuItemType == QtWidgets.QStyleOptionMenuItem.MenuItemType.SubMenu:
+            right -= LIQUID_MENU_ARROW
+        rect = QtCore.QRect(left, option.rect.top() + 4,
+                            max(4, right - left), max(4, option.rect.height() - 8))
+        color = theme.text() if enabled else QtGui.QColor(LIQUID_MENU_DISABLED)
+        painter.save()
+        painter.setFont(_ui_font(LIQUID_MENU_TEXT_PX))
+        painter.setPen(color)
+        theme.outlined_text(painter, rect,
+                            QtCore.Qt.AlignmentFlag.AlignLeft |
+                            QtCore.Qt.AlignmentFlag.AlignVCenter |
+                            QtCore.Qt.TextFlag.TextSingleLine,
+                            text, color=color)
+        painter.restore()
+
+
+# 强引用 + 主题切换时的原 style：QStyle 不属于 QWidget，Python 侧必须自己留住。
+_MENU_STYLE_REFS: dict = {}
 
 
 class MenuGlass(QtCore.QObject):
@@ -312,29 +469,40 @@ class MenuGlass(QtCore.QObject):
         theme.changed.connect(self._on_theme)
 
     def _on_theme(self):
-        """切出液态玻璃时，正在显示 / 之后显示的菜单都要恢复原皮肤。"""
+        """主题切换：切出液态时恢复原皮肤，切回液态时把已有菜单重新 dress。"""
         if theme.liquid:
+            for m in self._app.topLevelWidgets():
+                if isinstance(m, QtWidgets.QMenu):
+                    self.dress(m)
             return
         for m in self._app.topLevelWidgets():
             if isinstance(m, QtWidgets.QMenu):
                 self.undress(m)
+        for m in list(_MENU_STYLE_REFS):
+            self.undress(m)
 
     @staticmethod
     def dress(m: QtWidgets.QMenu):
-        """把菜单换成"背景透明 + 圆角项"的皮肤，玻璃由 paint 事件画在底下。"""
+        """液态菜单：原液态玻璃底 + 白字黑边。QSS 只给字色/字体，绘制交给 _LiquidMenuStyle。"""
         if m.property("lg_dressed"):
             return
         m.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
         m.setProperty("lg_prev", m.styleSheet())
-        _bg, fg, sel = theme.menu_qss()
-        m.setStyleSheet(MENU_QSS.format(fg=fg, sel=sel))
+        style = _LiquidMenuStyle()
+        _MENU_STYLE_REFS[m] = (style, _prev_menu_style(m))
+        # 顺序：先 setStyle 再 setStyleSheet。QSS 里没有 background/item 规则时
+        # QStyleSheetStyle 才转发 CE_MenuItem 给代理样式（见 MENU_QSS 处的实测说明）。
+        m.setStyle(style)
+        m.setStyleSheet(MENU_QSS.format(fg=theme.qss_color(theme.text()), fonts=theme.font_css()))
         m.setProperty("lg_dressed", True)
 
     @staticmethod
     def undress(m: QtWidgets.QMenu):
-        """换回别的主题：恢复原来的皮肤，否则会出现"透明菜单"。"""
+        """换回别的主题：恢复原来的皮肤 / style，绝不把液态代理样式留给非液态菜单。"""
         if not m.property("lg_dressed"):
             return
+        style, prev_style = _MENU_STYLE_REFS.pop(m, (None, None))
+        m.setStyle(prev_style if prev_style is not None else None)
         m.setStyleSheet(m.property("lg_prev") or "")
         m.setProperty("lg_dressed", False)
 
@@ -359,7 +527,7 @@ class MenuGlass(QtCore.QObject):
         r = QtCore.QRectF(m.rect())
         if r.width() < 4 or r.height() < 4:
             return
-        _backdrop(m, r, 14.0)
+        _backdrop(m, r, LIQUID_MENU_RADIUS)
 
     @staticmethod
     def _paint(m: QtWidgets.QMenu):

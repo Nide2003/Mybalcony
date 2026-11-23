@@ -12,7 +12,7 @@ import os
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .anim import clamp
-from .theme import G, W, icon_font, theme, ui_font
+from .theme import G, W, apply_qss_text_shadow, icon_font, theme, ui_font
 from .widgets import Hoverable, LineEdit, PillButton, Segmented, Switch, painter
 from ..core import bg
 from ..services import bluetooth, wifi
@@ -48,6 +48,7 @@ def _panel_brush(rect: QtCore.QRectF) -> QtGui.QBrush:
 
 def _style_label(w, level: float):
     w.setStyleSheet(f"color:{_rgba(theme.text(level))};background:transparent")
+    apply_qss_text_shadow(w)
 
 
 def _style_button(b):
@@ -116,7 +117,7 @@ class CCRow(Hoverable):
         p.setFont(f)
         p.setPen(theme.text(1.0 if self.active else 0.92))
         fm = QtGui.QFontMetrics(f)
-        p.drawText(QtCore.QRectF(tx, r.y(), tw, r.height()),
+        theme.outlined_text(p, QtCore.QRectF(tx, r.y(), tw, r.height()),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                    fm.elidedText(self.title, Qt.TextElideMode.ElideRight, int(tw)))
 
@@ -124,7 +125,7 @@ class CCRow(Hoverable):
             f2 = ui_font(11.5)
             p.setFont(f2)
             p.setPen(theme.text3())
-            p.drawText(QtCore.QRectF(r.right() - 56, r.y(), 40, r.height()),
+            theme.outlined_text(p, QtCore.QRectF(r.right() - 56, r.y(), 40, r.height()),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, self.right)
         if self.lock:
             p.setFont(icon_font(10))
@@ -188,6 +189,7 @@ class CCPanel(QtWidgets.QWidget):
             if w.property("cc_status"):
                 w.setStyleSheet(
                     f"color:{_rgba(theme.down() if self._status_ok else theme.up())};background:transparent")
+                apply_qss_text_shadow(w)
             else:
                 lv = w.property("cc_level")
                 if lv is not None:
@@ -310,6 +312,7 @@ class CCPanel(QtWidgets.QWidget):
         self._status.setText(text)
         self._status.setStyleSheet(
             f"color:{_rgba(theme.down() if ok else theme.up())};background:transparent")
+        apply_qss_text_shadow(self._status)
 
     def finish(self):
         self.adjustSize()

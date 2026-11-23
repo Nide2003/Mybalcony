@@ -9,7 +9,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from .anim import Spring, clamp
 from .liquid import paint_chip, paint_interactive_chip
-from .theme import G, W, icon_font, theme, ui_font
+from .theme import G, W, apply_qss_text_shadow, icon_font, theme, ui_font
 
 Qt = QtCore.Qt
 AA = QtGui.QPainter.RenderHint.Antialiasing
@@ -211,6 +211,9 @@ class IconButton(Hoverable):
         self.filled = filled
         self.active = False
         self.color: QtGui.QColor | None = None
+        # 亮底反色：白图标压在纯白背景上会消失。导航栏按背景亮度替自己的按钮翻色，
+        # 其余调用点保持 False（白底场景由使用方决定，不擅自改全局观感）。
+        self.on_light = False
         self.setFixedSize(size, size)
         if tip:
             self.setToolTip(tip)
@@ -230,9 +233,18 @@ class IconButton(Hoverable):
         if theme.liquid:
             r = self.card_rect()
             self.card_transform(p, r)
-            self.paint_card_bg(p, r, min(14.0, r.height() / 2))
+            hx = clamp(self._hover.x, 0.0, 1.0)
+            if self.on_light:
+                # 亮底：玻璃薄片在白背景上等于没有，悬停改用淡墨圆给出反馈
+                if hx > 0.01:
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QtGui.QColor(0, 0, 0, int(46 * hx)))
+                    rad = min(14.0, r.height() / 2)
+                    p.drawRoundedRect(r, rad, rad)
+            else:
+                self.paint_card_bg(p, r, min(14.0, r.height() / 2))
             p.setFont(icon_font(self.icon_px))
-            p.setPen(theme.text(0.94))
+            p.setPen(theme.glass_ink(self.on_light, 0.94))
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.glyph)
             return
         r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
@@ -293,7 +305,7 @@ class PillButton(Hoverable):
                 x += 19
             p.setFont(ui_font(12.5, W.DemiBold))
             tw = r.right() - x - 10
-            p.drawText(QtCore.QRectF(x, r.y(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            theme.outlined_text(p, QtCore.QRectF(x, r.y(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                        QtGui.QFontMetrics(p.font()).elidedText(self.text, Qt.TextElideMode.ElideRight, int(tw)))
             return
         r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
@@ -317,7 +329,7 @@ class PillButton(Hoverable):
             x += 20
         p.setFont(ui_font(12.5, W.Medium))
         tw = r.right() - x - 11
-        p.drawText(QtCore.QRectF(x, r.y(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+        theme.outlined_text(p, QtCore.QRectF(x, r.y(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                    QtGui.QFontMetrics(p.font()).elidedText(self.text, Qt.TextElideMode.ElideRight, int(tw)))
 
 
@@ -373,10 +385,10 @@ class Label(QtWidgets.QWidget, Themed):
         p.setPen(c)
         r = QtCore.QRectF(self.rect())
         if self.wrap:
-            p.drawText(r, int(self.align) | int(Qt.TextFlag.TextWordWrap), self._text)
+            theme.outlined_text(p, r, int(self.align) | int(Qt.TextFlag.TextWordWrap), self._text)
         else:
             fm = QtGui.QFontMetrics(self.font_)
-            p.drawText(r, self.align, fm.elidedText(self._text, Qt.TextElideMode.ElideRight, int(r.width())))
+            theme.outlined_text(p, r, self.align, fm.elidedText(self._text, Qt.TextElideMode.ElideRight, int(r.width())))
 
 
 class Slider(QtWidgets.QWidget, Themed):
@@ -478,7 +490,8 @@ class Slider(QtWidgets.QWidget, Themed):
         txt = self.label or f"{round(v * 100)}"
         p.setFont(ui_font(11.5, W.Medium, num=True))
         p.setPen(QtGui.QColor(30, 30, 34, 170) if v > 0.9 else theme.text2())
-        p.drawText(r.adjusted(0, 0, -12, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, txt)
+        theme.outlined_text(p, r.adjusted(0, 0, -12, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                            txt, outline=not (v > 0.9))   # 填充段上的深色字不描边
 
 
 class Switch(Hoverable):
@@ -625,7 +638,7 @@ class SwitchRow(QtWidgets.QWidget, Themed):
         p.setPen(theme.text(0.95 if self.on else 0.8))
         fm = QtGui.QFontMetrics(p.font())
         tw = self.sw.x() - r.x() - 22
-        p.drawText(QtCore.QRectF(r.x() + 10, r.y(), max(10, tw), r.height()),
+        theme.outlined_text(p, QtCore.QRectF(r.x() + 10, r.y(), max(10, tw), r.height()),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                    fm.elidedText(self.text, Qt.TextElideMode.ElideRight, int(max(10, tw))))
 
@@ -694,17 +707,17 @@ class Tile(Hoverable):
         p.setPen(theme.text(a))
         fm = QtGui.QFontMetrics(p.font())
         if self.sub:
-            p.drawText(QtCore.QRectF(tx, r.y() + 7, tw, r.height() / 2 - 5),
+            theme.outlined_text(p, QtCore.QRectF(tx, r.y() + 7, tw, r.height() / 2 - 5),
                        Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft,
                        fm.elidedText(self.title, Qt.TextElideMode.ElideRight, int(tw)))
             p.setFont(ui_font(11))
             fm2 = QtGui.QFontMetrics(p.font())
             p.setPen(theme.text2(a))
-            p.drawText(QtCore.QRectF(tx, r.center().y() + 1, tw, r.height() / 2 - 6),
+            theme.outlined_text(p, QtCore.QRectF(tx, r.center().y() + 1, tw, r.height() / 2 - 6),
                        Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft,
                        fm2.elidedText(self.sub, Qt.TextElideMode.ElideRight, int(tw)))
         else:
-            p.drawText(QtCore.QRectF(tx, r.y(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            theme.outlined_text(p, QtCore.QRectF(tx, r.y(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                        fm.elidedText(self.title, Qt.TextElideMode.ElideRight, int(tw)))
 
 
@@ -849,7 +862,7 @@ class CCTile(Hoverable):
         p.setFont(ui_font(14, W.DemiBold))
         p.setPen(theme.text(a))
         fm = QtGui.QFontMetrics(p.font())
-        p.drawText(QtCore.QRectF(tx, ty, tw, 20),
+        theme.outlined_text(p, QtCore.QRectF(tx, ty, tw, 20),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
                    fm.elidedText(self.title, Qt.TextElideMode.ElideRight, int(tw)))
 
@@ -872,7 +885,7 @@ class CCTile(Hoverable):
                 p.drawRoundedRect(sr.adjusted(0, 0, 0, -2), 9, 9)
             p.setFont(f)
             p.setPen(theme.text3(0.95 * a + 0.05))
-            p.drawText(QtCore.QRectF(tx, r.bottom() - 26, tw - 12, 18),
+            theme.outlined_text(p, QtCore.QRectF(tx, r.bottom() - 26, tw - 12, 18),
                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sub)
             if self.has_menu:
                 # ⌃⌄（Ctrl Center 那种上/下双箭头）：跟在状态文字后面，
@@ -933,8 +946,10 @@ class Segmented(QtWidgets.QWidget, Themed):
             p.drawRoundedRect(sel, sel.height() / 2, sel.height() / 2)
         p.setFont(ui_font(12, W.Medium))
         for i, t in enumerate(self.items):
-            p.setPen(theme.pill_text() if i == self.index else theme.text(0.6))
-            p.drawText(QtCore.QRectF(r.x() + cw * i, r.y(), cw, r.height()), Qt.AlignmentFlag.AlignCenter, t)
+            sel_text = i == self.index
+            p.setPen(theme.pill_text() if sel_text else theme.text(0.6))
+            theme.outlined_text(p, QtCore.QRectF(r.x() + cw * i, r.y(), cw, r.height()),
+                                Qt.AlignmentFlag.AlignCenter, t, outline=not sel_text)
 
 
 class Sparkline(QtWidgets.QWidget, Themed):
@@ -1113,6 +1128,7 @@ class LineEdit(QtWidgets.QLineEdit):
         pal = self.palette()
         pal.setColor(QtGui.QPalette.ColorRole.PlaceholderText, theme.text3())
         self.setPalette(pal)
+        apply_qss_text_shadow(self)
 
     def mousePressEvent(self, e):
         self.focus_wanted.emit()
@@ -1142,6 +1158,7 @@ class TextEdit(QtWidgets.QPlainTextEdit):
         pal = self.palette()
         pal.setColor(QtGui.QPalette.ColorRole.PlaceholderText, theme.text3())
         self.setPalette(pal)
+        apply_qss_text_shadow(self)
 
     def mousePressEvent(self, e):
         self.focus_wanted.emit()

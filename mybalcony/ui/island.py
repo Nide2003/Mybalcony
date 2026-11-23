@@ -39,6 +39,7 @@ PAD = 12
 CARD_MARGIN = 10                 # 内卡片与液态玻璃四周的距离
 CARD_INNER = 8                   # 内容与内卡片边缘的距离（10→8，让 卡片边距 + 轮廓外沿 = 31 = 折射带 band）
 CARD_R = 18                      # 内卡片圆角
+PAGE_CARD_INSET = 8.0            # 液态主题下页面内容卡片相对外层玻璃再内缩一圈
 NAV_GAP = 12.4                   # 导航胶囊与内容的缝 = 0.40 × band（band 31）
 PANEL_R = 40.0                   # 面板圆角兜底值（正常路径按 PANEL_R_RATIO 算）
 PANEL_R_RATIO = 0.18             # 面板所有圆角 = 短边 × 18%
@@ -63,7 +64,9 @@ EDGE_MARGIN = 6
 GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_TRANSPARENT = 0x00000020
-HWND_TOPMOST = -1
+# 必须是 64 位 (HWND)-1：裸 -1 经无签名的 ctypes 调用会变成 0x00000000FFFFFFFF，
+# 在 x64 上是无效句柄，SetWindowPos(..., HWND_TOPMOST, ...) 会静默失败（返回 0）。
+HWND_TOPMOST = ctypes.c_void_p(-1).value
 SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
 SWP_NOACTIVATE = 0x0010
@@ -82,6 +85,19 @@ user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintyp
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.GetForegroundWindow.restype = wintypes.HWND
 user32.RegisterWindowMessageW.restype = wintypes.UINT
+# 窗口 z-order 相关调用必须声明 64 位签名，否则 HWND 会被截成 32 位，
+# 顶层窗口（MyDockFinder 也是置顶窗口）的抬升会失效。
+user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                ctypes.c_int, ctypes.c_int, wintypes.UINT]
+user32.SetWindowPos.restype = wintypes.BOOL
+user32.BringWindowToTop.argtypes = [wintypes.HWND]
+user32.BringWindowToTop.restype = wintypes.BOOL
+user32.WindowFromPoint.argtypes = [wintypes.POINT]
+user32.WindowFromPoint.restype = wintypes.HWND
+user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+user32.GetAncestor.restype = wintypes.HWND
+user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+user32.GetCursorPos.restype = wintypes.BOOL
 
 
 def parse_hotkey(s: str) -> tuple[int, int] | None:
@@ -319,6 +335,9 @@ class Island(QtWidgets.QWidget):
         # 画圈会让高光定格 / 一顿一顿地跳。光标移动时维持一小段时间的逐帧重绘。
         self._spec_until = 0.0
         self._spec_pos = QtCore.QPoint()
+        # 小岛 / 中岛稳定态的轻量帧计数：GPU 背景每帧推，前景（圆角呼吸 + 边缘流光 +
+        # 小形象 look/near）按 1/3 帧走一次完整路径，避免把 90Hz 全花在 QPainterPath 重算上。
+        self._fast_skip = 0
         self._lg_img: QtGui.QImage | None = None     # 液态玻璃静态光学层缓存
         self._lg_key = None
 
@@ -505,8 +524,11 @@ class Island(QtWidgets.QWidget):
         self._page_key = self.nav.current()
 
     def _content_margin(self) -> float:
-        """内容区边距：液态主题下内容落在内卡片里，要按卡片边距算，否则页高会短一截。"""
-        return CARD_MARGIN + CARD_INNER if theme.liquid else PAD
+        """内容区边距：液态主题下内容落在内卡片里，要按卡片边距算，否则页高会短一截。
+
+        液态主题额外叠加 PAGE_CARD_INSET，让页面内容卡片整体比最外层液态玻璃小一圈。
+        """
+        return CARD_MARGIN + CARD_INNER + PAGE_CARD_INSET if theme.liquid else PAD
 
     def page_body_height(self, page_h: float) -> float:
         """页高 -> 面板高。边距上下不对称（上 m-2、下 m），再加导航栏和 8px 间距。"""
@@ -829,10 +851,33 @@ class Island(QtWidgets.QWidget):
             self._last = time.perf_counter()
             self.timer.start()
 
+    def _gpu_active(self) -> bool:
+        """原生 GPU 液态背景层是否正在工作。
+
+        大岛（展开）已验证的办法：NativeGlassWindow 常驻在 Qt 前景下方，背景由 DXCam
+        高帧纹理直接上传，Qt 侧只画前景。收起态 / 中岛只要满足同样条件就共用这套机制，
+        帧循环因此可以常驻在轻量档而不是耗在 spring / path / layout 重算上。
+        拖动、全屏隐藏、非液态主题、GPU 初始化失败时一律返回 False（保留原回退路径）。
+        """
+        return (theme.liquid and self._native_gpu and self.gpu_view is not None
+                and self.gpu_view.isVisible() and self.mode == "anchored"
+                and not self._fs_hidden and self.isVisible())
+
+    def _compact_cursor_far(self, margin: float) -> bool:
+        """光标是否离小岛本体（不是 900×680 的透明窗口）足够远。
+
+        小形象的 look/near 只跟本体附近的鼠标有关；用整窗口判断的话，光标在屏幕上半区
+        就会一直挡住轻量路径，优化等于没做。
+        """
+        b = self.body.translated(QtCore.QPointF(self._win_origin))
+        b = b.adjusted(-margin, -margin, margin, margin)
+        return not b.contains(QtCore.QPointF(QtGui.QCursor.pos()))
+
     def _needs_frames(self) -> bool:
         if self.mode != "anchored" or self.drips or self._bd_prev is not None:
             return True
-        if theme.liquid and self.expanded and self.gpu_view is not None and self.gpu_view.isVisible():
+        if self._gpu_active():
+            # GPU 背景层：收起 / 中岛 / 展开都要常驻帧，轻量路径每帧只推一次 GPU 画布。
             return True
         if theme.liquid and self.expanded and time.perf_counter() < self._spec_until:
             return True                  # 镜面高光跟手：鼠标停稳后自动停帧，不常驻 60fps
@@ -843,17 +888,52 @@ class Island(QtWidgets.QWidget):
             return True                  # 收起态：常态动画（圆角呼吸 + 边缘流光）持续运行
         return False
 
+    def _foreground_animating(self) -> bool:
+        """前景是否存在「形状不变、但需要逐帧刷新」的动画。
+
+        GPU 可见时前景窗口默认只在形状变化（old != new）时重绘；歌词扫光、圆角呼吸、
+        边缘流光、pet 表情和液态大岛的镜面高光跟手都属于形状不变的前景动画，需要单独
+        放行。该方法只在走到完整帧时由 _update_geometry 调用（轻量帧在 _tick 里已提前
+        return），因此不会抵消 2/3 轻量帧节流。
+        """
+        if self.compact.busy():
+            return True                  # 歌词扫光 / pet 表情 / 字幕 / activity
+        if theme.liquid and self.expanded and time.perf_counter() < self._spec_until:
+            return True                  # 液态大岛：镜面高光跟手窗口
+        if not self.expanded and not self._fs_hidden:
+            return True                  # 收起态：圆角呼吸 + 边缘流光 + 小形象 look/near
+        return False
+
     def _tick(self):
         now = time.perf_counter()
         dt = min(1 / 30, max(1 / 240, now - self._last))
         self._last = now
 
-        if (self.gpu_view is not None and self.gpu_view.isVisible() and self.expanded
-                and self.mode == "anchored" and not self.drips and self._bd_prev is None
+        # ---- settled fast path（大岛办法）：GPU 层可见 + 锚定 + 无水滴/背景交叉淡入 +
+        #      关键 spring 全 rest 时，只推 GPU 画布，跳过整段 spring / path / layout 重算。
+        if (self._gpu_active() and not self.drips and self._bd_prev is None
                 and all(s.rest for s in (self.sw, self.sh, self.content_a, self.compact_a))):
-            self.gpu_view.update()
-            self.timer.setInterval(11)
-            return
+            if self.expanded:
+                # 大岛：展开态前景默认是静态的，沿用原来的纯 GPU 轻量帧；
+                # 但镜面高光跟手窗口内 paint_spec 每帧都在变，必须走完整帧重绘前景，
+                # 否则前景窗口拿不到 update()，高光会定格（形状不变也被旧闸门挡住）。
+                if time.perf_counter() >= self._spec_until:
+                    self.gpu_view.update()
+                    self.timer.setInterval(11)
+                    return
+            # 小岛 / 中岛：前景还有圆角呼吸、边缘流光和小形象 look/near 跟手，不能整段跳过。
+            # media / pet / subtitle 这类持续动画（compact.busy()）照常跑完整帧循环；
+            # 光标靠近时 look/near 要跟手也走完整帧。真正稳定且光标离岛较远时进轻量档：
+            # 每 3 帧放行一次完整路径刷新呼吸 / 流光 / 表情（约 30fps，与原空闲档一致），
+            # 其余帧只更新 GPU 背景纹理，避免 90Hz 全花在 QPainterPath / 布局重算上。
+            if (not self.expanded and self._gpu_active() and not self.compact.busy()
+                    and all(s.rest for s in (self.poke, self.lift, self.tilt))
+                    and self._compact_cursor_far(96.0)):
+                self._fast_skip = (self._fast_skip + 1) % 3
+                if self._fast_skip:
+                    self.gpu_view.update()
+                    self.timer.setInterval(11)
+                    return
 
         if self.embed_bar() and now - self._bar_probe_t > 1.5:
             # MyDockFinder 可能比本程序晚启动（或中途重启），持续重探顶栏高度
@@ -970,8 +1050,13 @@ class Island(QtWidgets.QWidget):
             self.timer.stop()
             self.timer.setInterval(16)
         elif self.mode == "anchored" and self.sw.rest and self.sh.rest and not self.expanded:
-            # 只有常态动画：表情 / 音乐律动 / 提醒时 60fps，空闲（只有圆角呼吸）时 30fps
-            self.timer.setInterval(16 if self.compact.busy() else 33)
+            # 收起 / 中岛：GPU 路径按大岛同档 11ms 驱动背景纹理（轻量帧只推 GPU 画布，
+            # 完整帧约每 3 帧一次刷新呼吸 / 流光）；有 media/pet/subtitle 持续动画时 16ms
+            # 跑完整帧。无 GPU 的 CPU / offscreen 回退仍是 60/30fps 省电档，不无谓高频抓屏。
+            if self._gpu_active():
+                self.timer.setInterval(16 if self.compact.busy() else 11)
+            else:
+                self.timer.setInterval(16 if self.compact.busy() else 33)
         elif (self.mode == "anchored" and self.expanded and theme.liquid
               and self.sw.rest and self.sh.rest):
             # 90 Hz 液态背景由 DXCam 驱动；GPU/CPU 实际帧率由性能采样记录。
@@ -1206,7 +1291,9 @@ class Island(QtWidgets.QWidget):
         # 直接 GPU 静止时只重绘 OpenGL 画布；形状改变才让父窗口重画阴影。
         if self.gpu_view is not None and self.gpu_view.isVisible() and self.mode != "drag":
             self.gpu_view.update()
-            if old != new:
+            # 形状不变也要重绘 Qt 前景：歌词扫光 / 呼吸 / 流光 / 跟手高光都是形状不变的
+            # 前景动画。轻量帧在 _tick 里已提前 return，到不了这里，故不破坏 2/3 节流。
+            if old != new or self._foreground_animating():
                 self.update()
         else:
             self.update()
@@ -1230,8 +1317,9 @@ class Island(QtWidgets.QWidget):
         lay = self._content_lay
         lay.removeWidget(self.nav)
         lay.removeWidget(self.stack)
-        # 液态主题：内容落在内卡片里，边距 = 卡片与玻璃的距离 + 卡片内边距
-        m = CARD_MARGIN + CARD_INNER if theme.liquid else PAD
+        # 液态主题：内容落在内卡片里，边距 = 卡片与玻璃的距离 + 卡片内边距 + 页面卡片内缩，
+        # 让页面内容卡片整体比最外层液态玻璃小一圈
+        m = CARD_MARGIN + CARD_INNER + PAGE_CARD_INSET if theme.liquid else PAD
         if bottom:
             lay.setContentsMargins(m, m, m, m - 2)
             lay.addWidget(self.stack, 1)
@@ -1278,8 +1366,14 @@ class Island(QtWidgets.QWidget):
         if self.mode != "anchored":
             interval = 1 / 40           # 拖动：窗口真的在移动，背景要跟上
         else:
-            fps = max(2.0, float(cfg.get("island.blur_fps", 10)))
-            interval = 1 / (fps if self.expanded else min(fps, 12.0))
+            fps = max(2.0, float(cfg.get("island.blur_fps", 90)))
+            # 大岛一直按 blur_fps 抓；小岛 / 中岛原先被 min(fps, 12) 限到 12fps，
+            # NativeGlassWindow 的 live 背景纹理跟手性差。液态 + 原生 GPU 可用时放行到
+            # 同一高帧档（背景抓屏本身由 DXCam 90fps 供给，不会额外增加折射计算）。
+            # 非液态主题 / GPU 初始化失败的 CPU / offscreen 回退保持原 12fps 省电；
+            # 全屏隐藏时也没有必要高频抓屏。
+            hi_fps = self.expanded or self._gpu_active()
+            interval = 1 / (fps if hi_fps else min(fps, 12.0))
             if animating and not theme.liquid:
                 # 展开 / 收起只是形状在变，身后的画面并没有变。原来这里按 1/40 抓屏，
                 # 每次抓屏还会触发一次全窗口重绘，和折射重算叠加就是掉帧的主因。
@@ -1304,6 +1398,11 @@ class Island(QtWidgets.QWidget):
 
     def _on_backdrop(self, changed: bool):
         theme.feed_luminance(self.backdrop.luminance)
+        # 背景换了（壁纸 / 切到纯白页面）：导航栏重新判一次亮底反色。
+        # 这个方法内部会比对状态，只有真的需要翻色才重绘，高频调用也安全。
+        nav = getattr(self, "nav", None)
+        if nav is not None:
+            nav.refresh_light()
         if not changed:
             return
         if self.gpu_view is not None and self.gpu_view.isVisible():
@@ -1348,14 +1447,21 @@ class Island(QtWidgets.QWidget):
         # 1) 柔和阴影（几层半透明描边，廉价近似）：抬起时阴影更大更软
         #    对齐沉浸光感那版：radius 20 / rgba(0,0,0,0.15) / offsetY -4（阴影往上飘一点，
         #    玻璃才像被光从下方托起来的，而不是贴在地上）。
-        sp = path.translated(0, -4.0 + 6.0 * lift)
-        k = 1.8 if theme.liquid else 1.0            # 液态玻璃要有明确的脱离感，阴影加重
-        for wdt, a in ((20, 9), (12, 13), (6, 22)):
-            p.strokePath(sp, QtGui.QPen(QtGui.QColor(0, 0, 0, min(90, int(a * k * (1.0 + 2.4 * lift)))),
-                                        wdt * (1.0 + 0.8 * lift)))
+        #    液态主题不再叠加这三层描边阴影：外折射环本身已提供脱离感，再叠阴影反而会在
+        #    岛外多出一圈柔和黑边（用户要消除的那种观感）；非液态主题保持原样不变。
+        if not theme.liquid:
+            sp = path.translated(0, -4.0 + 6.0 * lift)
+            k = 1.0                                 # 非液态：维持原有阴影强度（液态分支已关闭）
+            for wdt, a in ((20, 9), (12, 13), (6, 22)):
+                p.strokePath(sp, QtGui.QPen(QtGui.QColor(0, 0, 0, min(90, int(a * k * (1.0 + 2.4 * lift)))),
+                                            wdt * (1.0 + 0.8 * lift)))
         if self.gpu_view is not None and self.gpu_view.isVisible() and self.mode != "drag":
             if self._native_gpu:
                 self._paint_foreground(p, path)
+                # 原生 GPU 路径只走 _paint_foreground，CPU 的 _paint_liquid 那两层
+                # （双光源刃口 + 跟手镜面高光）不会执行；在这里补回，对齐菜单的玻璃观感。
+                if theme.liquid and self.expanded:
+                    self._gpu_liquid_accents(p, path, self.body)
             p.restore()
             p.end()
             return
@@ -1377,6 +1483,30 @@ class Island(QtWidgets.QWidget):
         #    再叠一条 Y=1 / 2px 的白内阴影（35%），在顶部压出一条液态高光线。
         self._paint_edge(p, path, bb)
         self._paint_rest(p, path, bb)
+
+    def _gpu_liquid_accents(self, p: QtGui.QPainter, path: QtGui.QPainterPath,
+                            bb: QtCore.QRectF):
+        """原生 GPU 前景路径专属：补回 CPU _paint_liquid 里的双光源刃口 + 跟手镜面高光。
+
+        这两层本来只在 _paint_glass → _paint_liquid（CPU 回退）里绘制，原生 GPU 路径
+        只调 _paint_foreground，所以展开大岛的菜单级「果冻感」在前景上缺席。这里只叠加
+        这两层 2D 前景：不碰 shader / 背景纹理 / 抓屏，且全程裁在轮廓内。惯性跟随复用
+        _paint_liquid 的 gp/home/tgt 逻辑——光标离开面板时高光自然回落到 home 点。
+        """
+        from .liquid import dual_edge, paint_spec
+        gp = QtCore.QPointF(QtGui.QCursor.pos()) - QtCore.QPointF(self._win_origin)
+        home = QtCore.QPointF(bb.left() + bb.width() * 0.12, bb.top() + bb.height() * 0.14)
+        tgt = gp if self.body.contains(gp) else home
+        prev = getattr(self, "_spec_pt", None)
+        self._spec_pt = tgt if prev is None else prev + (tgt - prev) * 0.34
+        p.save()
+        p.setClipPath(path)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        # 双光源刃口：与菜单 paint_static_layers 同一套 92/46，约 1.3px 的细亮描边
+        p.strokePath(path, QtGui.QPen(QtGui.QBrush(dual_edge(bb, 92, 46)), 1.3))
+        p.restore()
+        # 镜面高光：paint_spec 内部自带 setClipPath，叠在刃口之上
+        paint_spec(p, path, bb, self._spec_pt)
 
     def _paint_glass(self, p: QtGui.QPainter, path: QtGui.QPainterPath, crossfade: bool = True):
         """毛玻璃底 + 色调 + 光泽（灵动岛本体与内容渐显面纱共用）。"""
@@ -1502,7 +1632,7 @@ class Island(QtWidgets.QWidget):
         p.restore()
 
     def _nav_strip_rect(self) -> QtCore.QRectF | None:
-        """导航条玻璃胶囊的矩形（窗口内坐标）：贴着图标组，两端各留 14，不铺满整条。"""
+        """导航条玻璃胶囊的矩形（窗口内坐标）：两端贴紧最左页签与最右按钮，不铺满整条。"""
         nav = getattr(self, "nav", None)
         if nav is None or not nav.isVisible() or nav.width() < 40:
             return None
@@ -1708,28 +1838,69 @@ class Island(QtWidgets.QWidget):
         r = self.geometry().adjusted(-gap, -gap, gap, gap)
         return not r.contains(gp)
 
+    def _popup_open(self) -> bool:
+        """是否有本应用弹出的二级层正在显示（QMenu / CCPanel / LookupPopup）。
+
+        这些弹层本来就该盖在岛上面。若此时还把岛抬到置顶组最前，岛上的一级按钮就会
+        反过来压住菜单 —— 表现正是「二级菜单碰到一级按钮，一级按钮又透出来了」。
+        """
+        try:
+            if QtWidgets.QApplication.activePopupWidget() is not None:
+                return True
+            for w in QtWidgets.QApplication.topLevelWidgets():
+                if w is self or not w.isVisible():
+                    continue
+                if isinstance(w, QtWidgets.QMenu):
+                    return True
+                if type(w).__name__ in ("CCPanel", "LookupPopup"):
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
     def _raise_topmost(self):
         """把自己提到置顶窗口组的最前面。
 
         MyDockFinder 的顶栏也是置顶窗口：用户点一下 Finder 栏后它会被提到我们前面，
         灵动岛就被压住、点不动也不再展开。这里不动焦点、不改尺寸，只把 z-order 拉回来。
         """
+        # 有二级弹层时绝不能抬岛：否则会把本该盖在岛上的菜单压回去，一级按钮透出。
+        if self._popup_open():
+            return
+        hwnd = int(self.winId())
         try:
-            # SetWindowPos(TOPMOST) 对这类 NOACTIVATE 工具窗口经常无效（返回 0），
-            # 实测 BringWindowToTop 能把自己重新提到 Finder 栏前面，且不会抢焦点。
-            if not user32.BringWindowToTop(int(self.winId())):
-                user32.SetWindowPos(int(self.winId()), HWND_TOPMOST, 0, 0, 0, 0,
-                                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER)
+            # 关键：HWND_TOPMOST 是 64 位 (HWND)-1（见常量定义）。之前传裸 -1 被 ctypes
+            # 截成 0xFFFFFFFF，SetWindowPos 一直静默失败，于是 Finder 栏压住后点不动。
+            # SetWindowPos 一次就放回 topmost 组最前；SWP_NOACTIVATE 保证不抢焦点。
+            ok = user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER)
+            if not ok:
+                user32.BringWindowToTop(hwnd)
         except Exception:  # noqa: BLE001
             pass
 
-    def _covered(self, gp: QtCore.QPoint) -> bool:
+    def _covered(self, gp: QtCore.QPoint | None = None) -> bool:
+        """光标当前是否命中了别人（而不是灵动岛本身）。
+
+        WindowFromPoint 收的是**物理**像素，QCursor.pos()/QWidget.mapToGlobal 给的是
+        逻辑坐标；高 DPI 缩放下直接把逻辑坐标传进去会命中屏幕上的错误位置，遮挡检测
+        因此失效。不传坐标时用 Win32 GetCursorPos 直接拿物理坐标（多屏异 DPI 也准）。
+        """
         try:
             hwnd = int(self.winId())
-            hit = user32.WindowFromPoint(wintypes.POINT(int(gp.x()), int(gp.y())))
+            if gp is None:
+                pt = wintypes.POINT()
+                if not user32.GetCursorPos(ctypes.byref(pt)):
+                    return False
+            else:
+                scr = QtGui.QGuiApplication.screenAt(gp) or self.scr
+                dpr, g = scr.devicePixelRatio(), scr.geometry()
+                pt = wintypes.POINT(round(g.x() + (gp.x() - g.x()) * dpr),
+                                    round(g.y() + (gp.y() - g.y()) * dpr))
+            hit = user32.WindowFromPoint(pt)
             if not hit:
                 return False
-            return hit != hwnd and user32.GetAncestor(hit, 2) != hwnd
+            return int(hit) != hwnd and int(user32.GetAncestor(hit, 2)) != hwnd
         except Exception:  # noqa: BLE001
             return False
 
@@ -1754,16 +1925,22 @@ class Island(QtWidgets.QWidget):
                 self._spec_until = time.perf_counter() + 0.30
                 self._kick()                 # 停稳 0.3s 后 _needs_frames 自动放回空闲
         if inside and not self.passthrough():
-            # 被 Finder 栏之类的置顶窗口压住：光标明明在岛上，命中的却是别人 → 把自己抬回来
-            gp = QtGui.QCursor.pos()
-            if now - getattr(self, "_raise_t", 0.0) > 0.6 and self._covered(gp):
+            # 光标刚进入岛：先无条件抬一次，保证紧接着的点击不会赶在 Finder 栏置顶之后被吞。
+            # 之后靠命中测试兜底：Finder 栏每次把自己置顶，最多 150ms 就拉回来。
+            if not getattr(self, "_was_inside", False):
                 self._raise_t = now
                 self._raise_topmost()
+            self._was_inside = True
+            if now - getattr(self, "_raise_t", 0.0) > 0.15 and self._covered():
+                self._raise_t = now
+                self._raise_topmost()
+        else:
+            self._was_inside = False
         if self.expanded and not self.passthrough():
             # 展开态还要盯住整块面板：豆包 / 编辑器这类自己也置顶的窗口被拉到前面时，
             # 会把面板下半截盖住，看起来就是"玻璃没铺满 + 一块清晰的脏背景"。
             gp2 = self.mapToGlobal(QtCore.QPoint(int(self.body.center().x()), int(self.body.center().y())))
-            if now - getattr(self, "_raise_t2", 0.0) > 1.0 and self._covered(gp2):
+            if now - getattr(self, "_raise_t2", 0.0) > 0.3 and self._covered(gp2):
                 self._raise_t2 = now
                 self._raise_topmost()
         if self.compact.bar_mode and not self.expanded:

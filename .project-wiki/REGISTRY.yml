@@ -1,5 +1,5 @@
 version: 1
-updated: '2026-11-22'
+updated: '2026-11-23'
 documents:
 - id: GLOSSARY
   type: note
@@ -45,6 +45,9 @@ documents:
   - mybalcony/ui/glass.py
   - mybalcony/ui/gpu_window.py
   - mybalcony/ui/gpu_widget.py
+  - mybalcony/ui/theme.py
+  - mybalcony/ui/nav.py
+  - mybalcony/ui/pages/bluetooth.py
   confidence: confirmed
 - id: CONSTRAINTS
   type: note
@@ -121,6 +124,17 @@ documents:
   - mybalcony/ui/gpu_window.py
   - mybalcony/ui/gpu_glass.py
   - mybalcony/ui/compact.py
+  - mybalcony/ui/theme.py
+  - mybalcony/ui/liquid.py
+  - mybalcony/ui/lookup.py
+  - mybalcony/ui/widgets.py
+  - mybalcony/ui/nav.py
+  - mybalcony/ui/ccpanel.py
+  - mybalcony/ui/pages/home.py
+  - mybalcony/ui/pages/info.py
+  - mybalcony/ui/pages/bluetooth.py
+  - mybalcony/ui/pages/system.py
+  - mybalcony/ui/pages/tools.py
   - requirements.txt
   confidence: confirmed
 - id: TECH-DEPLOYMENT
@@ -164,4 +178,10 @@ documents:
   - mybalcony/ui/gpu_window.py
   - mybalcony/ui/gpu_glass.py
   - mybalcony/ui/island.py
+  - mybalcony/ui/theme.py
+  - mybalcony/ui/liquid.py
+  - mybalcony/ui/lookup.py
+  - mybalcony/ui/compact.py
+  - mybalcony/ui/nav.py
+  - mybalcony/ui/pages/bluetooth.py
   confidence: confirmed

@@ -2,11 +2,15 @@
 """主题：浅色 / 深色毛玻璃配色、字体、图标码位。auto 模式按身后画面亮度自动切换。"""
 from __future__ import annotations
 
-from PySide6 import QtCore, QtGui
+from PySide6 import QtCore, QtGui, QtWidgets
 
 UI_FAMILIES = ["HarmonyOS Sans", "MiSans", "Segoe UI Variable Text", "Microsoft YaHei UI", "Segoe UI"]
 NUM_FAMILIES = ["HarmonyOS Sans", "Segoe UI Variable Display", "Segoe UI"]
 ICON_FAMILIES = ["Segoe Fluent Icons", "Segoe MDL2 Assets"]
+# 液态玻璃：苹方优先，后面的回退族和原 UI / 数字族完全一致（没装苹方时观感不变）。
+# ICON_FAMILIES 绝不能加苹方：Segoe Fluent Icons 的 glyph 码位只有图标字体认识。
+LIQUID_UI_FAMILIES = ["PingFang SC"] + UI_FAMILIES
+LIQUID_NUM_FAMILIES = ["PingFang SC"] + NUM_FAMILIES
 
 
 class G:
@@ -71,7 +75,12 @@ class G:
 
 def ui_font(px: float, weight: QtGui.QFont.Weight = QtGui.QFont.Weight.Normal, num: bool = False) -> QtGui.QFont:
     f = QtGui.QFont()
-    f.setFamilies(NUM_FAMILIES + UI_FAMILIES if num else UI_FAMILIES)
+    # theme 在模块末尾实例化，这里只在**调用时**读取，模块加载期不要调用本函数。
+    # 字体在控件构造时就定下：液态玻璃正常启动即苹方，运行中换主题不会重建字体族。
+    if theme.liquid:
+        f.setFamilies(LIQUID_NUM_FAMILIES if num else LIQUID_UI_FAMILIES)
+    else:
+        f.setFamilies(NUM_FAMILIES + UI_FAMILIES if num else UI_FAMILIES)
     f.setPixelSize(max(1, round(px)))
     f.setWeight(weight)
     f.setHintingPreference(QtGui.QFont.HintingPreference.PreferNoHinting)
@@ -128,7 +137,10 @@ PALETTES = {
     },
     # 液态玻璃（iOS 风格）：高透明 + 轻磨砂，tint 只铺一层薄霜保证文字可读，壁纸大量透出来
     "liquid-glass": {
-        "dark": False, "text": (10, 14, 22), "t2": 0.78, "t3": 0.58,
+        # 正文改纯白（text2/text3 按 t2/t3 倍率继承，同为白色系）；菜单是浅底
+        # rgba(246,250,254,240)，菜单文字必须继续用 #0d1219，否则读不清；
+        # on_fg / pill_fg 这类"浅底上的前景"也一律不动，只改主题正文文字色。
+        "dark": False, "text": (255, 255, 255), "t2": 0.78, "t3": 0.58,
         "tint": (238, 243, 251, 6),
         "card": (248, 250, 254, 42), "hover": (255, 255, 255, 62),
         "pill": (248, 250, 254, 58), "track": (10, 14, 22, 38), "fill": (255, 255, 255, 244),
@@ -288,6 +300,33 @@ class Theme(QtCore.QObject):
     def qss_color(self, c: QtGui.QColor) -> str:
         return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
 
+    def font_css(self) -> str:
+        """当前主题正文的 QSS font-family 串；图标字体不走这里（见 icon_font）。"""
+        families = LIQUID_UI_FAMILIES if self.liquid else UI_FAMILIES
+        return ",".join(f"'{name}'" for name in families)
+
+    # 文字描边入口以实例方法暴露（模块级实现见文件末尾），调用点统一写 theme.outlined_text。
+    def outlined_text(self, p, rect, flags, text: str,
+                      color: QtGui.QColor | None = None, outline: bool = True,
+                      edge: QtGui.QColor | None = None) -> None:
+        outlined_text(p, rect, flags, text, color, outline, edge=edge)
+
+    def glass_ink(self, on_light: bool, a: float = 1.0) -> QtGui.QColor:
+        """直接压在玻璃上的前景色（图标 glyph / 导航文字）。
+
+        液态玻璃的 tint 几乎全透明，玻璃颜色完全跟着壁纸走：壁纸偏白时白色前景会和
+        背景融成一片。亮底（on_light）切深色前景；正文本来就是深色的主题（浅色 /
+        晴空）原样返回，不做多余反色。
+        """
+        if not on_light or self.text().lightness() < 150:
+            return self.text(a)
+        c = QtGui.QColor(*LIGHT_INK)
+        c.setAlphaF(max(0.0, min(1.0, a)))
+        return c
+
+    def apply_qss_text_shadow(self, widget) -> None:
+        apply_qss_text_shadow(widget)
+
     @property
     def liquid(self) -> bool:
         """液态玻璃主题：绘制时额外叠一圈折射光 / 色散 / 镜面高光，背景图也做一次提纯。"""
@@ -303,3 +342,108 @@ KIND_COLORS = {
 }
 
 theme = Theme()
+
+
+# ---------------------------------------------------------------------------
+# 液态玻璃正文描边：所有 QPainter 手绘文字统一走 outlined_text()。
+# 非液态主题只有一次 p.drawText()，零额外开销、观感完全不变。
+# 液态主题：1 次轻阴影 + 4 次 1px 黑描边 + 1 次正文 = 每处 6 次 drawText
+# （歌词 3 行/帧即 18 次，仍是轻量路径；图标 glyph / 浅底前景不调用本函数）。
+# ---------------------------------------------------------------------------
+LIQUID_STROKE_ALPHA = 208       # 描边黑 alpha（细边不宜全黑，否则小字发糊）
+LIQUID_SHADOW_ALPHA = 84        # 阴影黑 alpha
+LIQUID_STROKE_PX = 1            # 描边偏移：约 1px
+LIQUID_SHADOW_DY = 2            # 阴影下沉：比描边多 1px，才露得出来
+LIQUID_QSS_SHADOW_BLUR = 1.0    # QSS 控件投影半径（Qt 无 text-shadow，只能退化成投影）
+_STROKE_DIRS = ((-1, 0), (1, 0), (0, -1), (0, 1))
+
+# 亮底反色：液态玻璃的 tint 几乎全透明，玻璃颜色完全跟着壁纸走。壁纸是白的时候，
+# 白字黑边会退化成"空心轮廓"——字身与背景 1:1 融成一片，只剩 1px 黑边勾出字形，
+# 12.5px 的小字基本读不出来。这类直接压在玻璃上的前景（导航字 / 图标）在亮底改成
+# 深字 + 白描边：白描边在浅灰底上把深字从背景里"托"出来，纯白底上自然隐形不碍眼。
+LIGHT_INK = (24, 26, 32)        # 亮底前景：深灰近黑，比纯黑柔和，小字不发硬
+LIGHT_STROKE_ALPHA = 210        # 亮底描边白 alpha
+LIGHT_IN = 0.58                 # 背景亮度高于它 -> 切深字
+LIGHT_OUT = 0.46                # 低于它 -> 回白字（滞回带，避免交界处来回闪）
+
+
+def outlined_text(p: QtGui.QPainter, rect, flags, text: str,
+                  color: QtGui.QColor | None = None, outline: bool = True,
+                  edge: QtGui.QColor | None = None) -> None:
+    """绘制正文文字：非液态直接 drawText；液态加细黑描边 + 轻黑阴影。
+
+    Args:
+        p: 目标 QPainter。
+        rect: QRectF / QRect 文本布局矩形。
+        flags: Qt.AlignmentFlag / Qt.TextFlag 组合（int 亦可）。
+        text: 要绘制的文本。
+        color: 可选正文色；默认沿用当前 pen —— 这样歌词的渐变扫光笔会被完整保留。
+        outline: 浅底前景（pill_text / on_fg）传 False，保持原色不加边。
+            液态菜单字现在也要白字黑边（见 liquid._LiquidMenuStyle），走默认的 True。
+        edge: 描边（含阴影）的基色，默认黑色 = 白字黑边。亮底反色时传白色：
+            深字配白描边才能在浅背景上读出来，且白底上白边自然隐形。亮底阴影
+            同时减到 1/3，否则深字下面挂一圈灰，字会发脏。
+    """
+    if not theme.liquid or not outline:
+        p.drawText(rect, flags, text)
+        return
+    if not text:
+        return
+
+    body = p.pen()                       # 完整保存笔：QPen 可带 QBrush 渐变（歌词扫光）
+    # 淡字（text2/text3、歌词邻行）等比降低描边强度，避免淡字被黑边压成粗体
+    k = 1.0
+    if body.brush().style() == QtCore.Qt.BrushStyle.SolidPattern:
+        k = 0.35 + 0.65 * max(0.0, min(1.0, body.color().alphaF()))
+
+    light_edge = edge is not None and edge.lightness() > 128
+    stroke = QtGui.QColor(edge) if edge is not None else QtGui.QColor(0, 0, 0)
+
+    # 1) 轻阴影：下沉 2px 的半透明黑，位于描边之外
+    p.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0,
+                                     round(LIQUID_SHADOW_ALPHA * k * (0.34 if light_edge else 1.0)))))
+    p.drawText(rect.translated(0, LIQUID_SHADOW_DY), flags, text)
+
+    # 2) 细描边：上下左右各 1px，不画 8 方向以守住每帧重绘的歌词性能
+    stroke.setAlpha(round((LIGHT_STROKE_ALPHA if light_edge else LIQUID_STROKE_ALPHA) * k))
+    p.setPen(QtGui.QPen(stroke))
+    d = LIQUID_STROKE_PX
+    for dx, dy in _STROKE_DIRS:
+        p.drawText(rect.translated(dx * d, dy * d), flags, text)
+
+    # 3) 正文：恢复原笔（渐变扫光不丢）；显式 color 时只换颜色、保留笔宽与线型
+    if color is None:
+        p.setPen(body)
+    else:
+        cp = QtGui.QPen(color)
+        cp.setWidthF(body.widthF())
+        cp.setStyle(body.style())
+        cp.setJoinStyle(body.joinStyle())
+        cp.setCapStyle(body.capStyle())
+        p.setPen(cp)
+    p.drawText(rect, flags, text)
+
+
+def apply_qss_text_shadow(widget) -> None:
+    """QSS 的 color 不支持 text-shadow：液态主题下给标准控件挂一层轻投影。
+
+    退化说明：QLabel / QTextBrowser 等透明控件得到接近文字阴影的效果；
+    QLineEdit / QPlainTextEdit 有自身底色，投影落在整框边缘而非单字，
+    且 Qt 无法给 QSS 文字加描边（stroke），这是 Qt 样式表的硬限制。
+    """
+    if widget is None:
+        return
+    eff = widget.graphicsEffect()
+    if not theme.liquid:
+        # 切回其它主题时撤掉自己挂的投影（不动调用方原本设置的特效）
+        if isinstance(eff, QtWidgets.QGraphicsDropShadowEffect) and eff.property("lg_text_shadow"):
+            widget.setGraphicsEffect(None)
+        return
+    if eff is not None:                  # 不覆盖调用方已有的特效
+        return
+    shadow = QtWidgets.QGraphicsDropShadowEffect(widget)
+    shadow.setProperty("lg_text_shadow", True)
+    shadow.setOffset(QtCore.QPointF(0.0, 1.0))
+    shadow.setBlurRadius(LIQUID_QSS_SHADOW_BLUR)
+    shadow.setColor(QtGui.QColor(0, 0, 0, LIQUID_SHADOW_ALPHA))
+    widget.setGraphicsEffect(shadow)

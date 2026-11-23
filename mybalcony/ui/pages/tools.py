@@ -8,7 +8,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ...core.config import cfg
 from ..anim import clamp
-from ..theme import G, W, icon_font, theme, ui_font
+from ..theme import G, W, apply_qss_text_shadow, icon_font, theme, ui_font
 from ..widgets import (Segmented, Card, Hoverable, IconButton, Label, LineEdit, PillButton, ScrollArea, TextEdit, hbox, painter,
                        vbox)
 from .base import Page
@@ -129,12 +129,12 @@ class ClipRow(Hoverable):
             if len(out) == lines and (len("".join(out)) < len(txt)):
                 out[-1] = fm.elidedText(out[-1] + "…", Qt.TextElideMode.ElideRight, int(body.width()))
             for i, line in enumerate(out[:lines]):
-                p.drawText(QtCore.QRectF(body.x(), body.y() + i * fm.lineSpacing(), body.width(), fm.lineSpacing()),
+                theme.outlined_text(p, QtCore.QRectF(body.x(), body.y() + i * fm.lineSpacing(), body.width(), fm.lineSpacing()),
                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, line)
         # 底栏：时间 · 置顶 · 删除
         p.setFont(ui_font(10.5, num=True))
         p.setPen(theme.text3())
-        p.drawText(QtCore.QRectF(r.x() + 14, r.bottom() - 34, 80, 30), Qt.AlignmentFlag.AlignVCenter,
+        theme.outlined_text(p, QtCore.QRectF(r.x() + 14, r.bottom() - 34, 80, 30), Qt.AlignmentFlag.AlignVCenter,
                    time.strftime("%H:%M", time.localtime(self.item.get("time", 0))))
         pinned = self.item.get("pinned")
         for rect, glyph, hot, base in ((self._pin_rect(), G.PIN if pinned else G.UNPIN, self._hot == "pin", 0.9 if pinned else 0.4),
@@ -343,7 +343,7 @@ class LiveView(QtWidgets.QWidget):
         if not items:
             p.setFont(ui_font(13))
             p.setPen(theme.text3())
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.hint)
+            theme.outlined_text(p, self.rect(), Qt.AlignmentFlag.AlignCenter, self.hint)
             return
         for it in reversed(items):
             zh = it.get("zh", "")
@@ -358,7 +358,7 @@ class LiveView(QtWidgets.QWidget):
             if zh:
                 p.setFont(fz)
                 p.setPen(theme.text(1.0 if it.get("final") else 0.8))
-                p.drawText(QtCore.QRect(4, int(y), w, hz), flags, zh)
+                theme.outlined_text(p, QtCore.QRect(4, int(y), w, hz), flags, zh)
             y -= hj + 2
             p.setFont(fj)
             for x, line, pw, tok, piece in flow:
@@ -370,7 +370,7 @@ class LiveView(QtWidgets.QWidget):
                     p.setBrush(theme.hover())
                     p.drawRoundedRect(r.adjusted(-2, 0, 2, 0), 5, 5)
                 p.setPen(theme.text3() if draft else (theme.text() if hot else theme.text2()))
-                p.drawText(r, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, piece)
+                theme.outlined_text(p, r, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, piece)
                 if tok is not None and tok.clickable and not draft and r.bottom() > 0:
                     self._hits.append((r, tok, it, (line, round(x))))
             y -= 12
@@ -388,7 +388,7 @@ class LiveView(QtWidgets.QWidget):
             p.drawRoundedRect(br, 12, 12)
             p.setFont(f)
             p.setPen(theme.text())
-            p.drawText(br, Qt.AlignmentFlag.AlignCenter, txt)
+            theme.outlined_text(p, br, Qt.AlignmentFlag.AlignCenter, txt)
             self._latest_btn = br
 
     def _measure(self):
@@ -500,13 +500,13 @@ class WordRow(Hoverable):
         p.setFont(ui_font(15, W.DemiBold))
         p.setPen(theme.text())
         fm = QtGui.QFontMetrics(p.font())
-        p.drawText(QtCore.QRectF(x, r.y(), 200, r.height()), Qt.AlignmentFlag.AlignVCenter, c.word)
+        theme.outlined_text(p, QtCore.QRectF(x, r.y(), 200, r.height()), Qt.AlignmentFlag.AlignVCenter, c.word)
         x += fm.horizontalAdvance(c.word) + 6
         if c.reading and c.reading != c.word:
             p.setFont(ui_font(12))
             p.setPen(theme.on_color())
             rd = f"【{c.reading}】"
-            p.drawText(QtCore.QRectF(x, r.y(), 200, r.height()), Qt.AlignmentFlag.AlignVCenter, rd)
+            theme.outlined_text(p, QtCore.QRectF(x, r.y(), 200, r.height()), Qt.AlignmentFlag.AlignVCenter, rd)
             x += QtGui.QFontMetrics(p.font()).horizontalAdvance(rd) + 8
         status = {2: "Anki ✓", 1: "已导出"}.get(c.exported, "待同步")
         p.setFont(ui_font(11))
@@ -515,11 +515,11 @@ class WordRow(Hoverable):
         meaning = (c.meaning or "").splitlines()[0] if c.meaning else ""
         p.setFont(ui_font(12.5))
         p.setPen(theme.text2())
-        p.drawText(QtCore.QRectF(x, r.y(), max(0, tw), r.height()), Qt.AlignmentFlag.AlignVCenter,
+        theme.outlined_text(p, QtCore.QRectF(x, r.y(), max(0, tw), r.height()), Qt.AlignmentFlag.AlignVCenter,
                    QtGui.QFontMetrics(p.font()).elidedText(meaning, Qt.TextElideMode.ElideRight, int(max(0, tw))))
         p.setFont(ui_font(11))
         p.setPen(theme.on_color() if c.exported >= 2 else theme.text3())
-        p.drawText(QtCore.QRectF(r.right() - 40 - sw, r.y(), sw, r.height()),
+        theme.outlined_text(p, QtCore.QRectF(r.right() - 40 - sw, r.y(), sw, r.height()),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, status)
         if self._hover.x > 0.05:
             dr = self._del_rect()
@@ -770,6 +770,7 @@ class TranslatePage(Page):
 
     def _style(self):
         self.out.setStyleSheet(f"color:{theme.qss_color(theme.text())};background:transparent")
+        apply_qss_text_shadow(self.out)
 
     def go(self):
         txt = self.input.toPlainText().strip()

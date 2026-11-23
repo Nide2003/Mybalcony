@@ -14,7 +14,7 @@ import time
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .anim import Spring, clamp
-from .theme import W, icon_font, theme, ui_font
+from .theme import LIGHT_IN, LIGHT_OUT, W, icon_font, theme, ui_font
 from .widgets import IconButton, painter
 
 Qt = QtCore.Qt
@@ -22,8 +22,20 @@ Qt = QtCore.Qt
 ICON_W = 34.0
 GAP = 16.0
 BTN_GAP = 14.0        # 图标组与右侧按钮之间的间距（整组居中时一起算）
-CAP_PAD = 14.0        # 玻璃胶囊在图标组两侧各留的空白（用户要"缩进去"，就是它）
+CAP_PAD = 0.0         # 玻璃胶囊两端贴合内容：紧贴最左页签与最右按钮，不留额外空白
 LONG_PRESS_MS = 380
+
+
+def _label_ink(active: bool, a: float, on_light: bool) -> QtGui.QColor:
+    """导航文字前景：暗底白字（当前项走 pill_text），亮底切深字。"""
+    if on_light:
+        return theme.glass_ink(True, a)
+    return theme.pill_text(a) if active else theme.text(a)
+
+
+def _label_edge(on_light: bool) -> QtGui.QColor | None:
+    """亮底时描边换成白色，把深字从浅背景里托出来；暗底返回 None（默认黑边）。"""
+    return QtGui.QColor(255, 255, 255) if on_light else None
 
 
 class _TabGhost(QtWidgets.QWidget):
@@ -31,10 +43,12 @@ class _TabGhost(QtWidgets.QWidget):
     PADX, PADY, PADB = 14.0, 8.0, 16.0
     BODY_H = 32.0
 
-    def __init__(self, glyph: str, label: str, width: float, full_w: float, active: bool, parent=None):
+    def __init__(self, glyph: str, label: str, width: float, full_w: float, active: bool, parent=None,
+                 on_light: bool = False):
         super().__init__(parent)
         self.glyph, self.label = glyph, label
         self.full_w, self.active = full_w, active
+        self.on_light = on_light                # 亮底反色：和导航栏本体保持同一套前景色
         self.lift = Spring(0.0, 320, 0.55, 0.02)
         self.setFixedSize(round(width + self.PADX * 2), round(self.BODY_H + self.PADY + self.PADB))
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -60,20 +74,25 @@ class _TabGhost(QtWidgets.QWidget):
             p.setBrush(QtGui.QColor(0, 0, 0, int(255 * a * t)))
             p.drawRoundedRect(r.adjusted(-1, dy - 1, 1, dy + 1), rad, rad)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(theme.active_pill() if self.active else theme.card(1.5))
+        if self.on_light:                              # 亮底：靠投影定形，白卡片本身也读得出来
+            p.setBrush(QtGui.QColor(250, 251, 253, 242))
+        else:
+            p.setBrush(theme.active_pill() if self.active else theme.card(1.5))
         p.drawRoundedRect(r, rad, rad)
         p.setFont(icon_font(15))
-        p.setPen(theme.pill_text() if self.active else theme.text(0.9))
+        p.setPen(_label_ink(self.active, 1.0 if self.active else 0.9, self.on_light))
         p.drawText(QtCore.QRectF(r.x(), r.y(), ICON_W, r.height()), Qt.AlignmentFlag.AlignCenter, self.glyph)
         extra = self.full_w - ICON_W
         prog = clamp((r.width() - ICON_W) / extra, 0, 1) if extra > 0 else 0
         if prog > 0.02:
             p.save()
             p.setClipRect(r.adjusted(0, 0, -4, 0))
+            # 与 NavBar.paintEvent 一致：苹方 + 细描边；亮底反色时深字配白边。
             p.setFont(self.font_)
-            p.setPen(theme.pill_text(prog) if self.active else theme.text(0.85 * prog))
-            p.drawText(QtCore.QRectF(r.x() + ICON_W - 4, r.y(), extra + 8, r.height()),
-                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.label)
+            p.setPen(_label_ink(self.active, prog, self.on_light))
+            theme.outlined_text(p, QtCore.QRectF(r.x() + ICON_W - 4, r.y(), extra + 8, r.height()),
+                                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.label,
+                                edge=_label_edge(self.on_light))
             p.restore()
         p.restore()
 
@@ -124,6 +143,11 @@ class NavBar(QtWidgets.QWidget):
         self.extra = QtWidgets.QHBoxLayout()
         self.right_buttons: list[IconButton] = []
 
+        # 亮底反色状态：壁纸偏白时白字会消失，切深字（见 _refresh_light）
+        self._on_light = False
+        self._lum_key = None
+        self._lum = 0.0
+
     def add_right_button(self, glyph: str, tip: str, cb) -> IconButton:
         b = IconButton(glyph, 30, 13, tip, self)
         b.clicked.connect(cb)
@@ -151,9 +175,10 @@ class NavBar(QtWidgets.QWidget):
             x += b.width() + 2
 
     def capsule_rect(self) -> QtCore.QRectF:
-        """导航玻璃胶囊的范围（导航控件局部坐标）：图标组 + 右侧按钮 + 两侧各 CAP_PAD。
+        """导航玻璃胶囊的范围（导航控件局部坐标）：图标组 + 右侧按钮，两端贴紧内容。
 
-        胶囊要贴着内容，不能铺满控件宽度（那样两端会各空出一大块）。
+        胶囊只包住图标组与右侧按钮，不铺满控件宽度；两端 padding 为 0（CAP_PAD），
+        玻璃条边缘正好落在最左页签与最右按钮的外沿，完全贴合。
         图标组宽度随当前页签弹性变化，所以这个矩形也是每帧变的。
         """
         rects = [r for r in self._rects() if r.width() > 0]
@@ -383,7 +408,8 @@ class NavBar(QtWidgets.QWidget):
         r = self._rects()[i]
         gl = self.mapTo(self._ghost_host, r.topLeft().toPoint())
         _key, glyph, label = self.items[i]
-        self._ghost = _TabGhost(glyph, label, r.width(), self.full_w[i], i == self.index, self._ghost_host)
+        self._ghost = _TabGhost(glyph, label, r.width(), self.full_w[i], i == self.index, self._ghost_host,
+                                on_light=self._on_light)
         self._ghost_gy = gl.y() - _TabGhost.PADY
         self._ghost_cx = gl.x() + r.width() / 2
         self._place_ghost()
@@ -496,9 +522,75 @@ class NavBar(QtWidgets.QWidget):
             cur = 0
         self.set_current(keys[vis[int(clamp(cur + d, 0, len(vis) - 1))]], emit=True)
 
+    # --- 亮底反色 ---
+    def _bg_luminance(self) -> float | None:
+        """导航胶囊背后（玻璃下面）的真实背景平均亮度，Rec.709，0..1。
+
+        数据源是岛已有的全分辨率背景快照 backdrop.hi：把胶囊矩形映射到快照坐标，
+        缩成 1×1 取平均色。没有快照（纯色兜底 / 刚启动）时返回 None，调用方保持
+        当前状态——宁可维持现状，也不要在没有依据时乱翻色。
+        """
+        win = self.window()
+        bd = getattr(win, "backdrop", None)
+        hi = getattr(bd, "hi", None)
+        hr = getattr(bd, "hi_rect", QtCore.QRect())
+        if hi is None or hi.isNull() or hr.isEmpty() or hr.width() < 1 or hr.height() < 1:
+            return None
+        top = self.mapTo(win, QtCore.QPoint(0, 0))
+        key = (int(getattr(bd, "version", 0)), top.x(), top.y(), self.width(), self.height())
+        if self._lum_key == key:                  # 背景没变、位置没动：直接用上次结果
+            return self._lum
+        origin = getattr(win, "_win_origin", win.mapToGlobal(QtCore.QPoint(0, 0)))
+        cap = self.capsule_rect()
+        sx = hi.width() / float(hr.width())
+        sy = hi.height() / float(hr.height())
+        src = QtCore.QRectF((top.x() + origin.x() + cap.x() - hr.x()) * sx,
+                            (top.y() + origin.y() + cap.y() - hr.y()) * sy,
+                            max(1.0, cap.width()) * sx, max(1.0, cap.height()) * sy).toAlignedRect()
+        src = src.intersected(hi.rect())
+        if src.width() < 2 or src.height() < 2:
+            return None
+        c = hi.copy(src).scaled(1, 1, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation).pixelColor(0, 0)
+        self._lum = 0.2126 * c.redF() + 0.7152 * c.greenF() + 0.0722 * c.blueF()
+        self._lum_key = key
+        return self._lum
+
+    def _refresh_light(self) -> None:
+        """按背景亮度在"白字黑边"和"深字白边"之间切换（带滞回，交界处不闪）。"""
+        if not theme.liquid or theme.text().lightness() < 150:
+            on_light = False                      # 非液态 / 正文本就深色：不需要反色
+        else:
+            lum = self._bg_luminance()
+            if lum is None:
+                return
+            on_light = self._on_light
+            if on_light and lum < LIGHT_OUT:
+                on_light = False
+            elif not on_light and lum > LIGHT_IN:
+                on_light = True
+        if on_light == self._on_light:
+            return
+        self._on_light = on_light
+        for b in self.right_buttons:              # 右侧按钮同属导航胶囊，图标一起翻色
+            b.on_light = on_light
+            b.update()
+
+    def refresh_light(self) -> None:
+        """背景快照更新后调用：只在反色状态真的翻转时重绘。
+
+        壁纸换了、页面切到纯白底时灵动岛不一定重绘子控件，导航栏就会停在旧配色上。
+        这里采样一次（1×1 缩略图，很便宜）并幂等处理，可安全地高频调用。
+        """
+        before = self._on_light
+        self._refresh_light()
+        if self._on_light != before:
+            self.update()
+
     # --- 绘制 ---
     def paintEvent(self, e):
         p = painter(self)
+        self._refresh_light()
         rects = self._rects()
         p.setPen(Qt.PenStyle.NoPen)
         for i, (key, glyph, label) in enumerate(self.items):
@@ -519,21 +611,22 @@ class NavBar(QtWidgets.QWidget):
                 p.scale(kx, ky)
                 p.translate(-r.center())
             if active:                            # 当前项底块一起被果冻带着走
-                if theme.liquid:
+                if theme.liquid and not self._on_light:
                     from .liquid import paint_interactive_chip
                     paint_interactive_chip(p, self, r, r.height() / 2, hover=max(self.hover[i].x, 0.45))
                 else:
-                    p.setBrush(theme.active_pill())
+                    # 亮底：半透白胶囊在白背景上等于没有，改用淡墨底把当前项标出来
+                    p.setBrush(QtGui.QColor(0, 0, 0, 30) if self._on_light else theme.active_pill())
                     p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
             # 悬停：极淡的圆
             if not active and self.hover[i].x > 0.01:
-                c = theme.hover()
+                c = QtGui.QColor(0, 0, 0, 46) if self._on_light else theme.hover()
                 c.setAlphaF(c.alphaF() * self.hover[i].x * 0.8)
                 p.setBrush(c)
                 p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
             a = 1.0 if active else 0.55 + 0.4 * self.hover[i].x
             p.setFont(icon_font(15))
-            p.setPen(theme.pill_text() if active else theme.text(a))
+            p.setPen(_label_ink(active, a, self._on_light))
             p.drawText(QtCore.QRectF(r.x(), r.y(), ICON_W, r.height()), Qt.AlignmentFlag.AlignCenter, glyph)
             # 文字：随宽度展开渐显，裁剪在本项矩形内
             extra = self.full_w[i] - ICON_W
@@ -541,10 +634,12 @@ class NavBar(QtWidgets.QWidget):
             if prog > 0.02:
                 p.save()
                 p.setClipRect(r.adjusted(0, 0, -4, 0))
+                # 导航栏文字：ui_font 在液态主题即苹方；暗底白字黑边，亮底深字白边（反色）。
                 p.setFont(self.font_)
-                p.setPen(theme.pill_text(prog))
-                p.drawText(QtCore.QRectF(r.x() + ICON_W - 4, r.y(), extra + 8, r.height()),
-                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, label)
+                p.setPen(_label_ink(active, prog, self._on_light))
+                theme.outlined_text(p, QtCore.QRectF(r.x() + ICON_W - 4, r.y(), extra + 8, r.height()),
+                                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, label,
+                                    edge=_label_edge(self._on_light))
                 p.restore()
             n = self.badges.get(key, 0)
             if n:
