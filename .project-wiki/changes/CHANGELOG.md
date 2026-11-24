@@ -1,5 +1,65 @@
 # Project Changelog
 
+## 2026-11-23 (black rim removed; light source pinned to bottom-left, highlight only)
+
+The previous `lightBg` bevel darkened the whole rim to make the island visible on white
+backgrounds, but on a real machine that reads as **a black outline around the island**. Removed the
+darkening entirely — the rim is now **additive highlight only**:
+
+- `_FRAGMENT`: dropped the `rimPx` full-perimeter thickness absorption and the `shadeAmt`
+  backlight darkening. What remains is a single light source pinned to the **bottom-left**:
+  a diagonal gradient (`litW = 0.5 + 0.354*(gradient.y - gradient.x)`) combined with a radial
+  falloff centred on the bottom-left corner (`cornerLit`), so the bottom-left corner is the
+  brightest point of the whole rim. `brightAmt = mix(0.12, 0.22, lightBg)` slightly raises the
+  highlight on light backgrounds so it can still reach pure white.
+- 2D layers follow the same single source: `dual_edge(..., up_right=0.45)` makes the bottom-left
+  edge strong (`hi=124`) and the top-right weak (`56`), with the diagonal midpoint at 0 so the
+  stroke never closes into a ring; `paint_spec`'s home point and `_gpu_liquid_accents` moved from
+  the top-left to the bottom-left; new `paint_corner_spec()` paints a fixed soft highlight in the
+  bottom-left corner so the glass still reads as lit when the cursor-following specular is away.
+- Removed the light-background ink stroke: `_paint_edge` and `paint_static_layers()` are back to
+  their white edges (the `edge_rgb` parameter stays but defaults to white), and `LIGHT_INK` is no
+  longer imported by `island.py`.
+
+Measured: on pure white the rim ring band reads 255.0 in **all four quadrants** (previously
+187–228, i.e. the visible black outline), with the centre untouched; on a dark backdrop the
+bottom-left quadrant is the brightest at 50.1 vs 38.0 at the top-right (Δ=12.1), and the 2D corner
+highlight adds another 13.1 levels (73.1 vs 60.0) there.
+
+Trade-off: with no darkening at all, the island is invisible again against pure white — the
+highlight can only be seen where the background is not already 255. Rendering the body in a very
+faint tint is the alternative if boundary visibility on white is needed again.
+
+## 2026-11-23 (glass bevel: island rim readable on pure-white backgrounds)
+
+The island had no visible boundary on an all-white background — every edge cue assumed a white
+foreground over a darker backdrop, and all of them fail at once: the outer drop shadow is disabled
+under the liquid theme, `_paint_edge` drew a `rgba(255,255,255,46)` line (1:1 with white), the
+shader's `edgeLight` only **adds** white, and refraction sampling a pure-white background stays
+white. Fixed by giving the rim the missing **backlit side**, so the edge becomes a bevelled glass
+wall instead of a single white stroke:
+
+- Shared `_FRAGMENT`: new `lightBg` uniform (0..1). The rim is now lit/unlit as a pair —
+  `color.rgb *= 1 - shadeAmt * pow(unlitW, 1.1) * bandW` darkens the backlit side while the
+  existing additive highlight keeps the lit side. `shadeAmt = mix(0.07, 0.42, lightBg)`,
+  `brightAmt = mix(0.12, 0.02, lightBg)`, so dark backgrounds keep the original white rim edge and
+  light backgrounds shift to the dark bevel (where a white highlight has no contrast anyway).
+  Added a rim-only thickness absorption `1 - mix(0.05, 0.16, lightBg) * rimPx` over the outermost
+  ~2px — glass walls darken from the refractive-index step regardless of background colour, which
+  is what makes the boundary readable on pure white.
+- Both GL paths feed `lightBg` from `island._light_bg`; `theme.lum` exposes the EMA-smoothed
+  backdrop brightness. `Island._on_backdrop` maps it continuously,
+  `clamp((theme.lum - 0.40) / 0.30, 0, 1)`, and repaints only when it moves by >0.004.
+- 2D layers follow the same flag: `_paint_edge`'s liquid stroke interpolates white→`LIGHT_INK`
+  (alpha 46→78), `_gpu_liquid_accents` and `paint_static_layers` take an `edge_rgb` argument
+  (`dual_edge(bb, hi, mid, rgb)`), and the CPU-fallback cache key includes `_light_bg` so a
+  colour flip rebuilds the prerendered layer.
+
+Measured on pure white: rim brightness 254 (old) → 207.8 (light mode), i.e. a 46-grey-level
+darkening against a 255 background, with the island centre untouched at 255 and zero alpha pixels
+outside all four edges. On a dark backdrop (40) with `lightBg=0` the rim stays 6.7 levels
+*brighter* than the interior, so the previous white-highlight look is preserved.
+
 ## 2026-11-23 (refraction no longer spills past the rim; center blur +50%)
 
 - Reported: the refraction band's bottom edge appeared to spill past the island body's bottom

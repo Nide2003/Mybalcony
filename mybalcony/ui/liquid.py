@@ -141,24 +141,34 @@ def paint_interactive_chip(p: QtGui.QPainter, widget: QtWidgets.QWidget, rect: Q
     p.drawImage(rect, img)
 
 
-def dual_edge(bb: QtCore.QRectF, hi: int, mid: int = 0) -> QtGui.QLinearGradient:
+def dual_edge(bb: QtCore.QRectF, hi: int, mid: int = 0,
+              rgb: tuple[int, int, int] = (255, 255, 255),
+              up_right: float = 1.0) -> QtGui.QLinearGradient:
     """左下 ↔ 右上对角双光渐变。
 
     沿这条对角线投影：左下角 0、右上角 1 最亮，左上 / 右下正好落在 0.5 处熄灭。
     直接当描边画刷用，刃口就是"两头亮、中间暗"的一道光，而不是均匀一圈白边。
+    rgb 默认白：亮背景上白刃口与背景 1:1 会消失，调用方可传墨色改成"厚度暗侧"。
+    up_right < 1 把右上端压弱，让左下成为唯一主光源（单向光才有"左下打了高光"的方向感）。
     """
     g = QtGui.QLinearGradient(bb.left(), bb.bottom(), bb.right(), bb.top())
-    g.setColorAt(0.00, QtGui.QColor(255, 255, 255, hi))
-    g.setColorAt(0.30, QtGui.QColor(255, 255, 255, mid))
-    g.setColorAt(0.50, QtGui.QColor(255, 255, 255, 0))
-    g.setColorAt(0.70, QtGui.QColor(255, 255, 255, mid))
-    g.setColorAt(1.00, QtGui.QColor(255, 255, 255, hi))
+    r, gg, b = rgb
+    g.setColorAt(0.00, QtGui.QColor(r, gg, b, hi))
+    g.setColorAt(0.30, QtGui.QColor(r, gg, b, mid))
+    g.setColorAt(0.50, QtGui.QColor(r, gg, b, 0))
+    g.setColorAt(0.70, QtGui.QColor(r, gg, b, round(mid * up_right)))
+    g.setColorAt(1.00, QtGui.QColor(r, gg, b, round(hi * up_right)))
     return g
 
 
-def paint_static_layers(p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF):
+def paint_static_layers(p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF,
+                        edge_rgb: tuple[int, int, int] = (255, 255, 255)):
     """光学层里不随光标变化的前 6 层。桌面窗口每帧重画这几层渐变描边很贵，调用方可以
-    把这几层预渲染成一张透明图缓存起来，每帧只贴一次图 + 画跟手高光。"""
+    把这几层预渲染成一张透明图缓存起来，每帧只贴一次图 + 画跟手高光。
+
+    edge_rgb：刃口色。纯白背景上白刃口与背景 1:1 会整条消失，调用方可传墨色改画
+    "玻璃厚壁的暗侧"（亮底自适应）。
+    """
     p.save()
     p.setClipPath(path)
     p.setPen(Qt.PenStyle.NoPen)
@@ -169,23 +179,50 @@ def paint_static_layers(p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.
     vg.setColorAt(0.55, QtGui.QColor(10, 16, 26, 4))
     vg.setColorAt(1.0, QtGui.QColor(10, 16, 26, 12))
     p.strokePath(path, QtGui.QPen(QtGui.QBrush(vg), max(2.0, min(4.0, h * 0.06))))
-    # 2) 细亮刃口：玻璃壁的横截面。左下 / 右上双光源 —— 两个角亮起来，左上与右下熄灭。
-    eg = dual_edge(bb, 92, 46)
+    # 2) 细亮刃口：玻璃壁的横截面。光源钉在左下——左下角最亮、右上只留弱轮廓
+    #    （up_right=0.45）。对称双光两侧一样亮，左下高光就立不起来。
+    eg = dual_edge(bb, 124, 52, edge_rgb, up_right=0.45)
     p.strokePath(path, QtGui.QPen(QtGui.QBrush(eg), 1.4))
     p.restore()
 
 
 def paint_spec(p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF,
                spec_pt: QtCore.QPointF | None = None):
-    """第 7 层：跟着光标走的镜面反射点，是光学层里唯一每帧都在变的层。"""
+    """第 7 层：跟着光标走的镜面反射点，是光学层里唯一每帧都在变的层。
+
+    光源钉在左下：光标离开时高光回落到左下角（原来回落到左上，与"左下打光"的方向
+    相反，边缘刃口和镜面光会互相打架）。
+    """
     p.save()
     p.setClipPath(path)
     p.setPen(Qt.PenStyle.NoPen)
     w, h = bb.width(), bb.height()
-    sp = spec_pt or QtCore.QPointF(bb.left() + w * 0.12, bb.top() + h * 0.14)
+    sp = spec_pt or QtCore.QPointF(bb.left() + w * 0.16, bb.bottom() - h * 0.22)
     rad = QtGui.QRadialGradient(sp, max(10.0, min(w, h) * 0.2))
     rad.setColorAt(0.0, QtGui.QColor(255, 255, 255, 80))
     rad.setColorAt(0.5, QtGui.QColor(255, 255, 255, 26))
+    rad.setColorAt(1.0, QtGui.QColor(255, 255, 255, 0))
+    p.fillPath(path, rad)
+    p.restore()
+
+
+def paint_corner_spec(p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF,
+                      strength: float = 1.0):
+    """左下角固定的镜面高光：光源钉在左下，跟手光离开后这里仍留一块"被照到"的亮斑。
+
+    纯白背景上白光与背景 1:1，本身看不出来——它的作用是配合 shader 的边缘压暗
+    （左下最亮、右上最暗）构成"光从左下来"的立体感；暗背景上则是直接的亮斑。
+    """
+    if path.isEmpty() or strength <= 0.0:
+        return
+    p.save()
+    p.setClipPath(path)
+    p.setPen(Qt.PenStyle.NoPen)
+    w, h = bb.width(), bb.height()
+    c = QtCore.QPointF(bb.left() + w * 0.17, bb.bottom() - h * 0.24)
+    rad = QtGui.QRadialGradient(c, max(18.0, min(w, h) * 0.55))
+    rad.setColorAt(0.0, QtGui.QColor(255, 255, 255, int(46 * strength)))
+    rad.setColorAt(0.45, QtGui.QColor(255, 255, 255, int(15 * strength)))
     rad.setColorAt(1.0, QtGui.QColor(255, 255, 255, 0))
     p.fillPath(path, rad)
     p.restore()

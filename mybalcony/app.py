@@ -78,7 +78,9 @@ def autostart_enabled() -> bool:
 
 
 def _autostart_cmd() -> str:
-    """开机自启命令：通过 mybalcony.vbs 启动（它会选用不带控制台的 pythonw，不会弹出终端窗口）。"""
+    """开机自启命令：安装版直接指向 exe；源码运行时通过 mybalcony.vbs 启动，不弹终端窗口。"""
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
     wscript = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "wscript.exe")
     return f'"{wscript}" "{ROOT / "mybalcony.vbs"}"'
 
@@ -121,11 +123,20 @@ def set_autostart(on: bool):
                 pass
 
 
+def app_icon() -> QtGui.QIcon:
+    """程序图标：安装版在 exe 同目录，源码运行时在 packaging/ 下。"""
+    for p in (ROOT / "mybalcony.ico", ROOT / "packaging" / "mybalcony.ico"):
+        if p.is_file():
+            return QtGui.QIcon(str(p))
+    return QtGui.QIcon()
+
+
 def main():
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings)
     app = QtWidgets.QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("Mybalcony")
+    app.setWindowIcon(app_icon())
     bg.init()
 
     lock = QtCore.QLockFile(str(DATA_DIR / "mybalcony.lock"))

@@ -140,6 +140,8 @@ class NativeGlassWindow(QtOpenGL.QOpenGLWindow):
         GL.glUniform1f(self._uniform("dispersion"), 0.0)
         GL.glUniform1f(self._uniform("lensScale"), 1.0)
         GL.glUniform1f(self._uniform("ringFade"), 1.25)
+        # 背景亮度：亮底时边缘从"加白刃口"切换成"厚度暗侧"定形，纯白背景才看得出岛体边界。
+        GL.glUniform1f(self._uniform("lightBg"), float(getattr(self.island, "_light_bg", 0.0)))
         GL.glUniform4f(self._uniform("hiRect"), hi_rect.x(), hi_rect.y(), hi_rect.width(), hi_rect.height())
         GL.glBindVertexArray(self.vao)
         GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)

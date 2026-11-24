@@ -575,3 +575,56 @@ zero-diff check against the zero-displacement render, and a real two-pass pulse 
 (was 3 px). Real-machine look pending. No requirement IDs or new open questions introduced.
 
 Questions: No new open questions. Alerts: None captured.
+
+## [2026-11-23] update | WLOG-20261123-020 | Glass bevel makes the rim readable on white
+
+Changed:
+
+- [changes/CHANGELOG.md](../changes/CHANGELOG.md) — added the glass-bevel entry.
+- [STATUS.md](../STATUS.md) — recent-updates bullet describes `lightBg` and the bevelled rim.
+- [technical/testing.md](../technical/testing.md) — added the white-background and dark-regression
+  measurements.
+
+Summary: Automatic post-implementation synchronization after the user reported that the island's
+edge looked identical to nothing on an all-white background and asked for a solution with real
+glass feel. Diagnosis: all four edge cues assume a white foreground over a darker backdrop — the
+outer shadow is disabled under the liquid theme, `_paint_edge` strokes a `rgba(255,255,255,46)`
+line, the shader's `edgeLight` only adds white, and refraction of an all-white backdrop stays
+white. Implemented a bevelled rim: a new `lightBg` uniform (0..1) darkens the backlit side
+(`shadeAmt = mix(0.07, 0.42, lightBg)`, `brightAmt = mix(0.12, 0.02, lightBg)`) and adds an
+outermost ~2 px thickness absorption, so the edge reads as a glass wall rather than a stroke.
+`theme.lum` and `Island._light_bg` drive it continuously with a repaint threshold; `_paint_edge`,
+`dual_edge(..., rgb)` and `paint_static_layers(..., edge_rgb)` follow the same flag, and the
+CPU-fallback cache key includes `_light_bg`. Verified by py_compile, real GL 3.3 compile and
+renders: white background rim 254.0 → 207.8 (46.2 levels) with the centre unchanged at 255 and no
+alpha outside the body; dark backdrop at 40 keeps the rim 6.7 levels brighter than the interior.
+Real-machine look pending. No requirement IDs or new open questions introduced.
+
+Questions: No new open questions. Alerts: None captured.
+
+## [2026-11-23] update | WLOG-20261123-021 | Black rim removed, light pinned bottom-left
+
+Changed:
+
+- [changes/CHANGELOG.md](../changes/CHANGELOG.md) — added the black-rim removal entry.
+- [STATUS.md](../STATUS.md) — recent-updates bullet describes the highlight-only rim.
+- [technical/testing.md](../technical/testing.md) — added the quadrant measurements before/after.
+
+Summary: Automatic post-implementation synchronization after the user reported that the
+`lightBg` bevel produced a black outline around the island and asked for it to be removed while
+keeping the bottom-left highlight. The shader's whole-perimeter darkening (`rimPx` thickness
+absorption and the `shadeAmt` backlight term) was deleted; the rim is now additive highlight only
+with a single source pinned to the bottom-left (`litW = 0.5 + 0.354*(gradient.y - gradient.x)`
+plus a radial `cornerLit`, `brightAmt = mix(0.12, 0.22, lightBg)`). 2D layers follow the same
+source: `dual_edge(..., up_right=0.45)` (bottom-left 124 / top-right 56 / midpoint 0),
+`paint_spec` home and `_gpu_liquid_accents` moved to the bottom-left, and a new
+`paint_corner_spec()` fixed corner highlight. The light-background ink stroke was reverted so
+`_paint_edge` and `paint_static_layers` draw white again. Verified by py_compile, real GL 3.3
+compile (18 active uniforms, `lightBg` still active) and an offscreen render with premultiplied
+blending: pure white rim band 255.0 in all four quadrants versus 187–228 before, centre untouched;
+dark backdrop bottom-left 50.1 vs top-right 38.0 with the 2D corner highlight adding 13.1.
+Known trade-off recorded: with no darkening the island blends into a pure-white page; a faint body
+tint is the alternative. Real-machine look pending. No requirement IDs or new open questions
+introduced.
+
+Questions: No new open questions. Alerts: None captured.

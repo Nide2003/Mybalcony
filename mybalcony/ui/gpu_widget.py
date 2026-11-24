@@ -105,6 +105,7 @@ uniform float dispersion;
 uniform float lensScale;
 uniform float ringFade;
 uniform float useForeground;
+uniform float lightBg;       // 背景亮度 0..1：0=暗底（白刃口为主），1=亮底（靠厚度暗侧定形）
 uniform vec4 hiRect;
 
 vec4 sampleBg(vec2 coord) {
@@ -162,10 +163,22 @@ void main() {
     // demo 内部：纯饱和度提升（saturate 1.5），不往 alpha 混色导致中心发灰。
     float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
     color.rgb = mix(vec3(luma), color.rgb, 1.5);
-    float lit = 0.72 * (max(0.0, dot(gradient, normalize(vec2(-1.0, 1.0))))
-                      + max(0.0, dot(gradient, normalize(vec2(1.0, -1.0)))));
-    float edgeLight = pow(clamp(lit, 0.0, 1.0), 1.6) * pow(band, 1.2) * 0.12;
-    color.rgb += vec3(edgeLight * color.a);
+    // 光源钉在左下：对角梯度给整体方向，再叠一块聚焦在左下角的径向受光，让左下角本身
+    // 成为亮斑——只靠对角梯度时整条左直边一样亮，左下角并不突出，读不出"打了个高光"。
+    // 纯白底上白光与背景 1:1，高光只能靠"其余边缘被压暗"衬托，所以压暗方向必须与光源一致。
+    // 0.354 = 0.5/sqrt(2)：在单位对角方向上正好把对角梯度的范围铺满 0..1。
+    float litW = clamp(0.5 + 0.354 * (gradient.y - gradient.x), 0.0, 1.0);
+    vec2 dLL = p - vec2(-halfSize.x, halfSize.y);          // y 向下为正 → 左下角是 (-hw, +hh)
+    float cornerLit = 1.0 - smoothstep(
+        0.0, max(40.0, min(halfSize.x, halfSize.y) * 1.5), length(dLL));
+    litW = clamp(0.42 * litW + 0.75 * cornerLit, 0.0, 1.0);
+    float bandW = pow(band, 1.2);
+    // 左下高光：只提亮、不压暗。之前为了在纯白背景上"看见"岛体加过一整圈背光压暗，
+    // 真机上就是一整条黑边，已全部移除。现在边缘只有迎光侧的白刃口——左下最强，
+    // 背光侧保持背景本色，没有任何描边感。亮底时把刃口提亮幅度加大一点，让左下
+    // 那圈高光在浅色背景上也能顶到纯白。
+    float brightAmt = mix(0.12, 0.22, lightBg);
+    color.rgb += vec3(brightAmt * pow(litW, 1.6) * bandW * color.a);
     // glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA) 要求预乘 alpha 合法：0<=rgb<=a。
     color.rgb = max(color.rgb, vec3(0.0));
     color.rgb = min(color.rgb, vec3(color.a));
@@ -421,6 +434,8 @@ class GlassGLWidget(QtOpenGLWidgets.QOpenGLWidget):
         GL.glUniform1f(self._uniform("dispersion"), 0.0)
         GL.glUniform1f(self._uniform("lensScale"), 1.0)
         GL.glUniform1f(self._uniform("ringFade"), 1.25)
+        # 背景亮度：亮底时边缘从"加白刃口"切换成"厚度暗侧"定形，纯白背景才看得出岛体边界。
+        GL.glUniform1f(self._uniform("lightBg"), float(getattr(self.island, "_light_bg", 0.0)))
         GL.glUniform4f(self._uniform("hiRect"), hi_rect.x(), hi_rect.y(), hi_rect.width(), hi_rect.height())
         GL.glBindVertexArray(self.vao)
         GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)

@@ -174,6 +174,12 @@ class Theme(QtCore.QObject):
         self.pal_name = None
         self._apply(mode if mode in PALETTES else "dark")
 
+    @property
+    def lum(self) -> float:
+        """身后画面的平滑亮度 0..1（feed_luminance 做过 EMA）。玻璃边缘据此决定
+        用"加白刃口"还是"厚度暗侧"定形——纯白背景下白前景与背景 1:1，只有暗侧才可见。"""
+        return self._lum
+
     # --- 自动切换（带滞回，避免在中间亮度来回跳） ---
     def feed_luminance(self, lum: float):
         import time as _t

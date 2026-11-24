@@ -1,0 +1,80 @@
+name: Build installer
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $v = $env:GITHUB_REF_NAME -replace '^v', ''
+          } else {
+            $v = "0.0.0-dev.$env:GITHUB_RUN_NUMBER"
+          }
+          "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build onedir
+        run: pyinstaller packaging/mybalcony.spec --noconfirm --clean
+
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $isl = Join-Path $PWD "packaging\ChineseSimplified.isl"
+          try {
+            Invoke-WebRequest "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/ChineseSimplified.isl" -OutFile $isl -UseBasicParsing
+          } catch {
+            Write-Warning "中文语言包下载失败，安装向导回退为英文"
+          }
+
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $found = Get-Command iscc -ErrorAction SilentlyContinue
+            if ($found) { $iscc = $found.Source } else { throw "找不到 ISCC.exe" }
+          }
+          & $iscc "/DAppVersion=${{ steps.version.outputs.value }}" "packaging\installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mybalcony-Setup-${{ steps.version.outputs.value }}
+          path: dist/installer/*.exe
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/installer/*.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true

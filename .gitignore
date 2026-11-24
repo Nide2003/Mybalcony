@@ -17,3 +17,13 @@ models/
 
 # 宣传视频素材与输出
 promo/
+
+# 构建产物：安装包只发布到 GitHub Releases，不进仓库
+dist/
+build/
+packaging/ChineseSimplified.isl
+build-pyinstaller.log
+
+# 本地构建工具（便携版 Inno Setup、离线 wheel 缓存）
+.tools/
+.build-wheels/

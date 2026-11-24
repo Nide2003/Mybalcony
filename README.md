@@ -6,12 +6,16 @@
 
 ## 安装
 
+**直接安装（推荐）**：到 [Releases](https://github.com/Nide2003/Mybalcony/releases/latest) 下载 `Mybalcony-Setup-x.y.z.exe`，双击安装，不需要装 Python。安装向导提供完整 / 精简 / 自定义三种方式：自定义时可自选安装目录、桌面快捷方式、开机自启和文档组件。
+
+**从源码运行**（开发 / 改代码用）：
+
 1. 装 **Python 3.10+**：<https://www.python.org/downloads/windows/>（勾选 **Add python.exe to PATH**）
-2. 下载项目：Releases 里的 `Mybalcony-x.y.z.zip`，或 `git clone https://github.com/Nide2003/Mybalcony.git`
+2. `git clone https://github.com/Nide2003/Mybalcony.git`
 3. 双击 **`setup.bat`**：自动建 `.venv` 装依赖（PyPI 连不通时自动用清华镜像）
 4. 双击 **`mybalcony.vbs`** 启动
 
-开机自启：右键灵动岛 → 开机自启。
+开机自启：右键灵动岛 → 开机自启，或在安装向导的附加任务里勾选。
 
 ## 能做什么
 
@@ -66,6 +70,32 @@
 - 双击 vbs 报 80070002 / 没反应：依赖没进 `.venv`，跑一次 `setup.bat`；日志在 `data\mybalcony.log`
 - 某台设备读不到电量：不同品牌协议不同，读不到会在电量页写明原因，不做猜测
 - 热键无效：可能被别的软件占用，改 `config.json → hotkeys`
+
+## 打包与发布
+
+仓库只放源码，安装包不提交进 Git，统一由 GitHub Actions 构建后挂在 Releases：
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+打 tag 会触发 `.github/workflows/build-installer.yml`：PyInstaller 出 onedir → Inno Setup 出 `Mybalcony-Setup-x.y.z.exe` → 自动上传为 Release 附件。也可以在 Actions 页面手动 Run workflow，只产出构建 artifact、不发 Release。
+
+- `packaging/entry.py`：打包入口（无控制台，日志写 `data\mybalcony.log`）
+- `packaging/mybalcony.spec`：PyInstaller 配置（onedir、隐藏导入、词典与 sherpa-onnx 动态库）
+- `packaging/installer.iss`：Inno Setup 安装脚本（完整 / 精简 / 自定义安装）
+- `packaging/mybalcony.ico`、`packaging/wizard-side.png`：可选，安装器图标与竖版向导图
+
+本地手动构建：
+
+```powershell
+pip install pyinstaller
+pyinstaller packaging/mybalcony.spec --noconfirm --clean
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\installer.iss
+```
+
+产物在 `dist\Mybalcony\` 和 `dist\installer\`，两处都已被 `.gitignore` 排除。
 
 ---
 

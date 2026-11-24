@@ -47,6 +47,29 @@ Last updated: 2026-11-23
 
 ## Recent Wiki Updates
 
+- 2026-11-23: **Removed the black rim** introduced by the earlier `lightBg` bevel, and pinned the
+  light to the **bottom-left**. The shader no longer darkens any part of the perimeter (the
+  `rimPx` thickness absorption and `shadeAmt` backlight term are gone) — the rim is additive
+  highlight only, `litW = 0.5 + 0.354*(gradient.y - gradient.x)` plus a radial `cornerLit` falloff
+  centred on the bottom-left corner, with `brightAmt = mix(0.12, 0.22, lightBg)`. 2D follows:
+  `dual_edge(..., up_right=0.45)` (bottom-left 124 / top-right 56 / midpoint 0, never a closed
+  ring), `paint_spec` home and `_gpu_liquid_accents` moved to the bottom-left, and a new
+  `paint_corner_spec()` fixed corner highlight. The light-background ink stroke was removed
+  (`_paint_edge` / `paint_static_layers` are white again). Measured: pure white rim band 255.0 in
+  all four quadrants (was 187–228 = the black outline), centre untouched; dark backdrop
+  bottom-left 50.1 vs top-right 38.0, corner highlight +13.1 more. Consequence: no darkening means
+  the island is transparent-looking again on pure white; a faint body tint is the alternative if
+  the boundary must stay visible there.
+- 2026-11-23: The island now keeps a **visible rim on pure-white backgrounds**. The edge used to be
+  a single additive white highlight, which is 1:1 with white and therefore invisible. It is now a
+  **bevelled glass wall**: a new `lightBg` uniform (0..1) darkens the backlit side
+  (`shadeAmt = mix(0.07, 0.42, lightBg)`) while keeping the lit side, plus an outermost ~2px
+  thickness absorption. `Island._light_bg` maps `theme.lum` continuously
+  (`clamp((lum - 0.40) / 0.30, 0, 1)`) and repaints only on a >0.004 change; the 2D layers follow
+  the same flag (`_paint_edge` stroke white→`LIGHT_INK`, `dual_edge(..., rgb)` and
+  `paint_static_layers(..., edge_rgb)`). Pure white: rim 254 → 207.8 (46 grey levels), centre
+  untouched, no alpha outside the body; dark backdrop keeps the original look (rim 6.7 levels
+  brighter than the interior).
 - 2026-11-23: Refraction no longer appears to **spill past the bottom rim**, and the body blur is
   **50% stronger**. Measurement first showed the SDF coverage was already exact (alpha stays 0
   outside all four edges; the edge row is pure antialiasing), so the spill was the displacement

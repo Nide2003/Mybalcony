@@ -5,12 +5,17 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 
 from PySide6 import QtCore
 
-ROOT = Path(__file__).resolve().parents[2]
+if getattr(sys, "frozen", False):
+    # 打包后：配置与 data 留在 exe 所在目录（安装版即 %LOCALAPPDATA%\Programs\Mybalcony）
+    ROOT = Path(sys.executable).resolve().parent
+else:
+    ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config.json"
 DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)

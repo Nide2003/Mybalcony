@@ -328,6 +328,7 @@ class Island(QtWidgets.QWidget):
         self._floor_on: dict = {}
         self._bd_shown = None
         self._bd_prev = None
+        self._light_bg = 0.0            # 背景亮度 0..1：玻璃边缘据此在"白刃口"与"厚度暗侧"间过渡
         self._bd_fade_t0 = 0.0
         self._shell_msg = 0
         self._dirty = QtCore.QRect()
@@ -1398,6 +1399,16 @@ class Island(QtWidgets.QWidget):
 
     def _on_backdrop(self, changed: bool):
         theme.feed_luminance(self.backdrop.luminance)
+        # 玻璃边缘定形：背景越亮越依赖"厚度暗侧"。纯白背景下加白高光与背景 1:1 完全不可见，
+        # 只有背光侧的压暗能勾出岛体边界。0.40 以下沿用原白刃口观感，0.70 以上暗侧主导，
+        # 中间连续过渡（shader 内是乘性压暗，不会跳）。用 theme.lum（EMA 平滑）而非瞬时
+        # 采样，避免边缘灰度随抓屏噪声抖动。
+        prev = self._light_bg
+        self._light_bg = clamp((theme.lum - 0.40) / 0.30, 0.0, 1.0)
+        if abs(self._light_bg - prev) > 0.004:
+            self.update()
+            if self.gpu_view is not None:
+                self.gpu_view.update()
         # 背景换了（壁纸 / 切到纯白页面）：导航栏重新判一次亮底反色。
         # 这个方法内部会比对状态，只有真的需要翻色才重绘，高频调用也安全。
         nav = getattr(self, "nav", None)
@@ -1493,18 +1504,24 @@ class Island(QtWidgets.QWidget):
         这两层 2D 前景：不碰 shader / 背景纹理 / 抓屏，且全程裁在轮廓内。惯性跟随复用
         _paint_liquid 的 gp/home/tgt 逻辑——光标离开面板时高光自然回落到 home 点。
         """
-        from .liquid import dual_edge, paint_spec
+        from .liquid import dual_edge, paint_corner_spec, paint_spec
         gp = QtCore.QPointF(QtGui.QCursor.pos()) - QtCore.QPointF(self._win_origin)
-        home = QtCore.QPointF(bb.left() + bb.width() * 0.12, bb.top() + bb.height() * 0.14)
+        # 光源钉在左下：跟手高光离开面板后回落到左下角（原来是左上，方向与刃口相反）。
+        home = QtCore.QPointF(bb.left() + bb.width() * 0.16, bb.bottom() - bb.height() * 0.22)
         tgt = gp if self.body.contains(gp) else home
         prev = getattr(self, "_spec_pt", None)
         self._spec_pt = tgt if prev is None else prev + (tgt - prev) * 0.34
         p.save()
         p.setClipPath(path)
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        # 双光源刃口：与菜单 paint_static_layers 同一套 92/46，约 1.3px 的细亮描边
-        p.strokePath(path, QtGui.QPen(QtGui.QBrush(dual_edge(bb, 92, 46)), 1.3))
+        # 刃口：左下最强（124）、右上只留弱轮廓（up_right=0.45），单向光才有"左下打光"的方向感。
+        # 只用白色亮边，不按亮底改墨色——那会绕岛一整圈，真机上就是一条黑边。
+        p.strokePath(path, QtGui.QPen(QtGui.QBrush(
+            dual_edge(bb, 124, 52, up_right=0.45)), 1.3))
         p.restore()
+        # 左下角固定高光：跟手光离开后这里仍留一块被照到的亮斑（暗底上是直接亮斑，
+        # 亮底上配合 shader 的"左下亮、右上暗"梯度把高光衬出来）。
+        paint_corner_spec(p, path, bb)
         # 镜面高光：paint_spec 内部自带 setClipPath，叠在刃口之上
         paint_spec(p, path, bb, self._spec_pt)
 
@@ -1618,6 +1635,9 @@ class Island(QtWidgets.QWidget):
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         if theme.liquid:
             p.setClipPath(path)
+            # 保持原来的白刃口。这里不再按背景亮度改成墨色：那会绕岛一整圈，真机上读起来
+            # 就是一条黑边。亮底上的定形交给 shader 的方向性受光（左下高光 / 背光侧轻压暗），
+            # 2D 层只负责玻璃的亮面高光。
             p.strokePath(path.translated(0, 0.8), QtGui.QPen(QtGui.QColor(255, 255, 255, 46), 0.8))
             p.restore()
             return
@@ -1735,7 +1755,8 @@ class Island(QtWidgets.QWidget):
         """
         from .liquid import paint_spec, paint_static_layers
         gp = QtCore.QPointF(QtGui.QCursor.pos()) - QtCore.QPointF(self._win_origin)
-        home = QtCore.QPointF(bb.left() + bb.width() * 0.12, bb.top() + bb.height() * 0.14)
+        # 光源钉在左下，与刃口方向一致（原来回落到左上，光会从两个角分别打）。
+        home = QtCore.QPointF(bb.left() + bb.width() * 0.16, bb.bottom() - bb.height() * 0.22)
         tgt = gp if self.body.contains(gp) else home
         prev = getattr(self, "_spec_pt", None)
         self._spec_pt = tgt if prev is None else prev + (tgt - prev) * 0.34
@@ -1754,6 +1775,7 @@ class Island(QtWidgets.QWidget):
             qp = QtGui.QPainter(img)
             qp.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
             qp.translate(-r.x(), -r.y())
+            # 刃口保持白色：不按亮底改墨色，否则绕岛一整圈会变成黑边。
             paint_static_layers(qp, path, bb)
             qp.end()
             self._lg_img = img
