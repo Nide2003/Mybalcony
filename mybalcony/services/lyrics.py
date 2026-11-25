@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
-"""歌词：从网易云音乐公开接口获取 LRC 歌词（含翻译），按播放进度给出当前行。
+"""歌词：优先取洛雪（LX Music）当前播放的歌词，兜底网易云公开接口与 LRCLIB。
 
+- 洛雪开放 API（本机 23330）：它聚合酷我 / 酷狗 / QQ / 网易 / 咪咕等源，
+  命中率与逐字歌词质量最好；只在「洛雪正在播放且与系统媒体会话是同一首」时采用
 - 网易云（读本地日志得到歌曲 id）：直接按 id 取歌词
 - 其它播放器（QQ 音乐、Spotify、浏览器等）：按「歌名 + 歌手」搜索，取时长最接近的一首
+
+逐字歌词（行内 <mm:ss.xx> 标签）会保留成字级时间轴，扫光按「唱到第几个字」
+推进，而不是按整行均分，跟唱更贴。
 
 信号 ready(key)：某首歌的歌词取到了（或确认没有），界面收到后重新查询 line()。
 """
@@ -22,15 +27,18 @@ from PySide6 import QtCore
 
 from mybalcony.core.bg import run_bg, ui
 from mybalcony.core.config import cfg
-from mybalcony.services import catalog
+from mybalcony.services import catalog, lxsource, netease_eapi
 
 API = "https://music.163.com/api"
 LRCLIB = "https://lrclib.net/api"
 HEADERS = {"Referer": "https://music.163.com/", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 # 网络失败后多久允许重试（确认"没有歌词"的结果仍整次运行缓存，不受这个影响）
 FAIL_COOLDOWN = 60.0
+EMPTY_TTL = 240.0          # "没歌词"结论的有效期：网络抖动来的空结果不能永久缓存
 _CREATE_NO_WINDOW = 0x08000000      # 调 curl 时不要弹黑框
 _TS = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
+# 行内逐字标签：字<00:03.21>字<00:04.05>（洛雪 lxlyric / Any Listen 与部分 QQ 歌词都用这个）
+_WORD_TAG = re.compile(r"<(\d{1,3}):(\d{1,2})(?:[.,:](\d{1,3}))?>")
 # 开头的制作信息（作词 / 作曲 / 编曲 …）不当作歌词显示
 _CREDIT = re.compile(r"^\s*[^\s:：]{1,12}\s*[:：]")
 # 歌词站常把「歌手 - 歌名」当第一行写进 LRC，别让它顶在正中间当歌词
@@ -83,33 +91,83 @@ def _curl_json(url: str, params: dict | None) -> dict | None:
 
 
 
-def parse_lrc(text: str) -> list[tuple[float, str]]:
-    out = []
+def _split_words(body: str) -> tuple[str, list[tuple[float, str]]]:
+    """把「文字<mm:ss.xx>文字…」拆成纯文本与字级时间轴（没有标签时时间轴为空）。"""
+    marks = list(_WORD_TAG.finditer(body))
+    if not marks:
+        return body.strip(), []
+    pieces: list[tuple[float | None, str]] = []
+    pos = 0
+    for m in marks:
+        seg = body[pos:m.start()]
+        frac = m.group(3) or "0"
+        t = int(m.group(1)) * 60 + int(m.group(2)) + int(frac) / (10 ** len(frac))
+        pieces.append((None, seg))
+        pieces.append((t, ""))
+        pos = m.end()
+    pieces.append((None, body[pos:]))
+
+    text_parts: list[str] = []
+    words: list[tuple[float, str]] = []
+    pending: float | None = None
+    for t, seg in pieces:
+        if t is not None:
+            pending = t
+            continue
+        if not seg:
+            continue
+        if pending is None:
+            text_parts.append(seg)          # 第一个字之前的前缀（正常为空）
+        else:
+            words.append((pending, seg))
+    text = ("".join(text_parts) + "".join(w for _, w in words)).strip()
+    if len(words) < 2:
+        return text, []                     # 只有一两个标签：不值得按字推
+    if any(words[i + 1][0] < words[i][0] for i in range(len(words) - 1)):
+        return text, []                     # 时间倒序的脏数据
+    return text, words
+
+
+def parse_lrc_words(text: str) -> tuple[list[tuple[float, str]], list[list[tuple[float, str]]]]:
+    """解析 LRC：返回 (行列表, 每行的字级时间轴)。"""
+    lines: list[tuple[float, str]] = []
+    words: list[list[tuple[float, str]]] = []
     for raw in (text or "").splitlines():
         stamps = list(_TS.finditer(raw))
         if not stamps:
             continue
-        body = raw[stamps[-1].end():].strip()
+        body, seg = _split_words(raw[stamps[-1].end():])
         for m in stamps:
             frac = m.group(3) or "0"
             t = int(m.group(1)) * 60 + int(m.group(2)) + int(frac) / (10 ** len(frac))
-            out.append((t, body))
-    out.sort(key=lambda x: x[0])
+            lines.append((t, body))
+            words.append(seg)
+    pairs = sorted(zip(lines, words), key=lambda x: x[0][0])
+    lines = [p[0] for p in pairs]
+    words = [p[1] for p in pairs]
     # 去掉开头连续的制作信息行 / 「歌手 - 歌名」标题行
     i = 0
-    while i < len(out) and (
-        not out[i][1]
-        or (out[i][0] < 40 and _CREDIT.match(out[i][1]))
-        or (i < 8 and out[i][0] < 40 and _TITLE_LINE.match(out[i][1]))
+    while i < len(lines) and (
+        not lines[i][1]
+        or (lines[i][0] < 40 and _CREDIT.match(lines[i][1]))
+        or (i < 8 and lines[i][0] < 40 and _TITLE_LINE.match(lines[i][1]))
     ):
         i += 1
-    return out[i:]
+    return lines[i:], words[i:]
+
+
+def parse_lrc(text: str) -> list[tuple[float, str]]:
+    return parse_lrc_words(text)[0]
 
 
 class Lyrics:
-    def __init__(self, lines: list[tuple[float, str]], trans: list[tuple[float, str]]):
+    def __init__(self, lines: list[tuple[float, str]], trans: list[tuple[float, str]],
+                 words: list[list[tuple[float, str]]] | None = None):
         self.times = [t for t, _ in lines]
         self.lines = [s for _, s in lines]
+        self.words = list(words or [])
+        if len(self.words) < len(self.lines):
+            self.words += [[] for _ in range(len(self.lines) - len(self.words))]
         tmap = {round(t, 1): s for t, s in trans if s}
         self.trans = [tmap.get(round(t, 1), "") for t in self.times]
 
@@ -130,6 +188,17 @@ class Lyrics:
             return 0.0
         start = self.times[i]
         end = self.times[i + 1] if i + 1 < len(self.times) else start + tail
+        seg = self.words[i] if i < len(self.words) else []
+        if len(seg) >= 2:
+            # 有字级时间轴：扫光按「唱到第几个字」推进，比整行均分贴合得多
+            ts = [t for t, _ in seg]
+            k = bisect.bisect_right(ts, pos + 1e-4) - 1
+            if k < 0:
+                return 0.0
+            t0 = ts[k]
+            t1 = ts[k + 1] if k + 1 < len(ts) else max(end, t0 + 0.6)
+            f = (pos - t0) / max(0.08, t1 - t0)
+            return min(1.0, (k + min(1.0, max(0.0, f))) / len(ts))
         span = max(0.35, end - start)
         return min(1.0, max(0.0, (pos - start) / span))
 
@@ -144,7 +213,13 @@ class LyricsService(QtCore.QObject):
         self._cache: dict[str, Lyrics | None] = {}
         self._pending: set[str] = set()
         self._fail_at: dict[str, float] = {}
+        self._empty_at: dict[str, float] = {}
+        self._req: dict[str, dict] = {}      # 最近一次请求参数，用于冷却后自动重试
         self._lock = threading.Lock()
+        self._retry = QtCore.QTimer(self)
+        self._retry.setInterval(6000)
+        self._retry.timeout.connect(self._retry_tick)
+        self._retry.start()
 
     @staticmethod
     def key(m: dict) -> str:
@@ -159,27 +234,59 @@ class LyricsService(QtCore.QObject):
         k = self.key(m)
         with self._lock:
             if k in self._cache:
-                return self._cache[k]
+                res = self._cache[k]
+                if res is not None:
+                    return res
+                # "没歌词"只信 EMPTY_TTL：网络抖动导致的空结果过一会儿要重新取，
+                # 否则一首歌整场都会空着（用户只看到标题没有歌词）。
+                if time.monotonic() - self._empty_at.get(k, 0.0) < EMPTY_TTL:
+                    return None
+                self._cache.pop(k, None)
             if k in self._pending:
                 return None
             if k in self._fail_at and time.monotonic() - self._fail_at[k] < FAIL_COOLDOWN:
                 return None            # 刚网络失败过：冷却期内不重复打请求
             self._pending.add(k)
+            self._req[k] = dict(m)
             self._fail_at.pop(k, None)
         run_bg(self._fetch, dict(m), on_done=lambda res, k=k: self._done(k, res),
-               on_error=lambda e, k=k: self._fail(k))
+               on_error=lambda e, k=k: self._fail(k, e))
         return None
+
+    def _retry_tick(self):
+        """冷却/等待结束后自动补取：媒体不变化时没人再调 get，光靠冷却会一直空着。"""
+        now = time.monotonic()
+        for k, m in list(self._req.items()):
+            with self._lock:
+                if k in self._pending:
+                    continue
+                cached = self._cache.get(k, "__miss__")
+                if cached != "__miss__" and cached is not None:
+                    self._req.pop(k, None)
+                    continue
+                at = self._fail_at.get(k)
+                if at is not None and now - at < FAIL_COOLDOWN:
+                    continue
+            self.get(m)
 
     def _done(self, k: str, res):
         with self._lock:
             self._pending.discard(k)
             self._cache[k] = res
+            if res is None:
+                self._empty_at[k] = time.monotonic()
+            else:
+                self._empty_at.pop(k, None)
+                self._req.pop(k, None)
             if len(self._cache) > 200:
                 self._cache.pop(next(iter(self._cache)))
         self.ready.emit(k)
 
-    def _fail(self, k: str):
+    def _fail(self, k: str, err: Exception | None = None):
         """网络/解析异常：不写进永久缓存，只记冷却时间，过一会儿还能自动重试。"""
+        if err is not None:
+            # 打到日志里：歌词取不到时能直接看出是哪一层（洛雪 / 搜索 / 网络）挂了
+            print(f"[lyrics] {k} 取词失败: {type(err).__name__}: {err}", flush=True)
         with self._lock:
             self._pending.discard(k)
             self._fail_at[k] = time.monotonic()
@@ -195,12 +302,49 @@ class LyricsService(QtCore.QObject):
             return _curl_json(url, params)
 
     def _fetch(self, m: dict) -> Lyrics | None:
-        return self._fetch_netease(m) or self._fetch_lrclib(m)
+        return self._fetch_lx(m) or self._fetch_netease(m) or self._fetch_lrclib(m)
+
+    def _fetch_lx(self, m: dict) -> Lyrics | None:
+        """洛雪（LX Music）开放 API：只在「它正在放的就是这首」时采用。
+
+        洛雪聚合了酷我 / 酷狗 / QQ / 网易 / 咪咕的歌词，命中率与逐字质量比单一
+        公开接口好；但它的接口只暴露"当前播放那一首"，所以必须核对歌名 / 歌手 /
+        时长，否则会把另一首歌的歌词套上来。
+        """
+        if not lxsource.source().enabled():
+            return None
+        st = lxsource.source().playing()
+        if not st or not lx_same_song(st, m):
+            return None
+        d = lxsource.source().lyric_all()
+        raw_lx = (d.get("lxlyric") or "").strip()
+        raw = (d.get("lyric") or "").strip()
+        lines, words = parse_lrc_words(raw_lx) if raw_lx else ([], [])
+        if not lines and raw:
+            lines, words = parse_lrc_words(raw)
+        if not lines:
+            return None
+        trans = parse_lrc(d.get("tlyric") or "")
+        lyr = Lyrics(lines, trans, words)
+        return lyr if lyr else None
 
     def _fetch_netease(self, m: dict) -> Lyrics | None:
         sid = str(m.get("song_id") or "") or self._search(m)
         if not sid:
             return None
+        # 先走 eapi（洛雪同款链路）：能拿到逐字 yrc，扫光按字推进；老歌没逐字时
+        # 返回的 lrc 也直接用，比公开接口多一层过滤（版权/翻译字段更全）。
+        d = netease_eapi.fetch(sid) if cfg.get("media.lyric_eapi", True) else None
+        if d:
+            yrc = d.get("yrc") or ""
+            text = netease_eapi.yrc_to_lrc(yrc) if yrc else (d.get("lrc") or "")
+            lines, words = parse_lrc_words(text)
+            if lines:
+                trans = parse_lrc(d.get("tlyric")
+                                  or netease_eapi.yrc_to_plain(d.get("ytlrc") or ""))
+                lyr = Lyrics(lines, trans, words)
+                if lyr:
+                    return lyr
         j = self._json(API + "/song/lyric", {"id": sid, "lv": 1, "tv": -1})
         if not j or j.get("nolyric") or j.get("uncollected"):
             return None
@@ -272,14 +416,20 @@ class LyricsService(QtCore.QObject):
         raw = (m.get("artist") or "").strip()
         if raw and raw != artist:
             queries.append(f"{core} {raw}")
-        for q in dict.fromkeys(x for x in queries if x.strip()):
+        qs = [q for q in dict.fromkeys(x for x in queries if x.strip())]
+        tried = failed = 0
+        for q in qs:
+            tried += 1
             try:
                 songs = self._query(q)
             except Exception:  # noqa: BLE001
+                failed += 1
                 continue
             sid = match_song(songs, title, core, artist, dur)
             if sid:
                 return sid
+        if tried and failed == tried:
+            raise RuntimeError("网易云搜索接口不可达")   # 全部查询都失败：让上层冷却后重试
         return self._search_catalog(title, core, artist, dur, raw)
 
     def _search_catalog(self, title: str, core: str, artist: str, dur: float, raw: str) -> str:
@@ -311,8 +461,28 @@ class LyricsService(QtCore.QObject):
         return ""
 
     def _query(self, q: str) -> list[dict]:
-        j = self._json(API + "/search/get/web", {"s": q, "type": 1, "limit": 15}) or {}
+        j = self._json(API + "/search/get/web", {"s": q, "type": 1, "limit": 15})
+        if not isinstance(j, dict):
+            # 网络不可达 ≠ 没有这首歌。抛出去让上层走冷却重试，避免把一次抖动
+            # 永久记成"无歌词"（那会让整首歌再也取不到歌词）。
+            raise RuntimeError("网易云搜索接口不可达")
         return ((j.get("result") or {}).get("songs")) or []
+
+
+def lx_same_song(st: dict, m: dict) -> bool:
+    """洛雪正在播放的这首，与系统媒体会话报的是不是同一首歌（宁严不松）。"""
+    lt = title_core(st.get("name") or "")
+    mt = title_core(m.get("title") or "")
+    if not lt or not mt or lt.casefold() != mt.casefold():
+        return False
+    la = primary_artist(st.get("singer") or "")
+    ma = primary_artist(m.get("artist") or "")
+    if la and ma and la.casefold() == ma.casefold():
+        return True
+    # 歌手写法不一致（中英文名 / 组合缩写）时用时长兜底：差 3 秒内算同一首
+    d1 = float(st.get("duration") or 0)
+    d2 = float(m.get("duration") or 0)
+    return bool(d1 > 0 and d2 > 0 and abs(d1 - d2) <= 3.0)
 
 
 def _names(song: dict) -> list[str]:

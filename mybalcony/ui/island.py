@@ -265,6 +265,9 @@ class Island(QtWidgets.QWidget):
         self.setMouseTracking(True)
         self.resize(WIN_W, WIN_H)
         self.peak_fn = peak_fn or (lambda: 0.0)
+        self._pk_env = 0.0                # 峰值包络（attack 瞬时 / release 慢衰）
+        self._pk_hi = 0.05                # 自动增益基准：近几秒的最大值
+        self._pk_t = 0.0
 
         self.backdrop = Backdrop()
         self._plate_at = 0.0              # 上一次整屏快照的时间戳（见 _snap_plate）
@@ -874,6 +877,31 @@ class Island(QtWidgets.QWidget):
         b = b.adjusted(-margin, -margin, margin, margin)
         return not b.contains(QtCore.QPointF(QtGui.QCursor.pos()))
 
+    def _idle_gpu(self) -> bool:
+        """可以走 45fps 前景档：GPU 层在、收起静止、光标离岛 120px 外、无按压/抬起/倾斜。
+
+        媒体播放 / 活动提示 / 字幕时**不降档**：音律跳动、歌词扫光这些看的就是高频，
+        45fps 会让"跳"变得没劲；小形象（pet）仍然可以降——光标离得远，眨眼和眼神
+        跟随本来就看不见，不必为它常驻 90fps。
+        """
+        if self.expanded or not self._gpu_active():
+            return False
+        if not all(s.rest for s in (self.poke, self.lift, self.tilt)):
+            return False
+        if not self._compact_cursor_far(120.0):
+            return False
+        return self.compact.mode() not in ("media", "activity", "subtitle")
+
+    def _bg_relaxed(self) -> bool:
+        """背景抓屏可以降到 30fps：只看"有没有交互"，与前景是否在跑动画无关。
+
+        实测背景这条路最贵（60fps × 16.5ms ≈ 一整核），它只决定玻璃里映出的桌面
+        多久刷新一次；光标离岛远、没展开、形状静止时，30fps 的雾化背景看不出差别。
+        """
+        return (self.mode == "anchored" and not self.expanded
+                and self.sw.rest and self.sh.rest
+                and self._compact_cursor_far(120.0))
+
     def _needs_frames(self) -> bool:
         if self.mode != "anchored" or self.drips or self._bd_prev is not None:
             return True
@@ -930,11 +958,17 @@ class Island(QtWidgets.QWidget):
             if (not self.expanded and self._gpu_active() and not self.compact.busy()
                     and all(s.rest for s in (self.poke, self.lift, self.tilt))
                     and self._compact_cursor_far(96.0)):
-                self._fast_skip = (self._fast_skip + 1) % 3
-                if self._fast_skip:
-                    self.gpu_view.update()
-                    self.timer.setInterval(11)
-                    return
+                if self._idle_gpu():
+                    # 空闲档：22ms（45fps）完整帧。呼吸 / 边缘流光在 45fps 下已经看不出降帧，
+                    # 又比常驻 90fps 省掉一半主线程；背景另按 30fps 抓（见 _request_backdrop）。
+                    # 不做 2/3 轻量跳过：轻量帧只推 GPU 画布，45fps 下会变成 15fps 前景动画。
+                    self.timer.setInterval(22)
+                else:
+                    self._fast_skip = (self._fast_skip + 1) % 3
+                    if self._fast_skip:
+                        self.gpu_view.update()
+                        self.timer.setInterval(11)
+                        return
 
         if self.embed_bar() and now - self._bar_probe_t > 1.5:
             # MyDockFinder 可能比本程序晚启动（或中途重启），持续重探顶栏高度
@@ -1055,7 +1089,12 @@ class Island(QtWidgets.QWidget):
             # 完整帧约每 3 帧一次刷新呼吸 / 流光）；有 media/pet/subtitle 持续动画时 16ms
             # 跑完整帧。无 GPU 的 CPU / offscreen 回退仍是 60/30fps 省电档，不无谓高频抓屏。
             if self._gpu_active():
-                self.timer.setInterval(16 if self.compact.busy() else 11)
+                if self.compact.busy():
+                    # 媒体播放 / 活动提示 / 字幕：音律跳动和扫光按最高档跑完整帧，
+                    # 不做 2/3 轻量跳过（跳过时前景只有 1/3 帧刷新，律动会"没劲"）。
+                    self.timer.setInterval(11)
+                else:
+                    self.timer.setInterval(22 if self._idle_gpu() else 11)
             else:
                 self.timer.setInterval(16 if self.compact.busy() else 33)
         elif (self.mode == "anchored" and self.expanded and theme.liquid
@@ -1213,7 +1252,7 @@ class Island(QtWidgets.QWidget):
             else:
                 poke_params = None
             if playing_wave:
-                pk = clamp(self.peak_fn() * 1.5, 0, 1)
+                pk = self._pk()
                 far = {"top": (0, 1), "bottom": (0, -1), "left": (1, 0), "right": (-1, 0)}[self.edge]
                 tt = t_now
 
@@ -1374,7 +1413,12 @@ class Island(QtWidgets.QWidget):
             # 非液态主题 / GPU 初始化失败的 CPU / offscreen 回退保持原 12fps 省电；
             # 全屏隐藏时也没有必要高频抓屏。
             hi_fps = self.expanded or self._gpu_active()
-            interval = 1 / (fps if hi_fps else min(fps, 12.0))
+            base = fps if hi_fps else min(fps, 12.0)
+            if self._bg_relaxed():
+                # 无交互（收起静止 / 光标离岛 120px 外）：背景 30fps 足够。
+                # 实测这一档是最大浪费点——90/60fps 抓屏 + 每帧裁切合成常驻吃掉一整核。
+                base = min(base, 30.0)
+            interval = 1 / base
             if animating and not theme.liquid:
                 # 展开 / 收起只是形状在变，身后的画面并没有变。原来这里按 1/40 抓屏，
                 # 每次抓屏还会触发一次全窗口重绘，和折射重算叠加就是掉帧的主因。
@@ -1468,6 +1512,11 @@ class Island(QtWidgets.QWidget):
                                             wdt * (1.0 + 0.8 * lift)))
         if self.gpu_view is not None and self.gpu_view.isVisible() and self.mode != "drag":
             if self._native_gpu:
+                # 玻璃由原生 OpenGL 窗口直接画，主窗这层只剩文字/图标，其余像素是全透明。
+                # layered 窗口里 alpha==0 的像素不参与命中测试，于是点击会从岛的正中央
+                # 直接穿到下面的 Finder 栏 / 浏览器，表现为"点了没反应"。
+                # 在 body 范围铺一层 alpha=1 的极淡底（肉眼不可见），只为了让它能接住点击。
+                p.fillPath(path, QtGui.QColor(0, 0, 0, 1))
                 self._paint_foreground(p, path)
                 # 原生 GPU 路径只走 _paint_foreground，CPU 的 _paint_liquid 那两层
                 # （双光源刃口 + 跟手镜面高光）不会执行；在这里补回，对齐菜单的玻璃观感。
@@ -1836,7 +1885,7 @@ class Island(QtWidgets.QWidget):
             else:
                 raw = bb
             self.compact.paint(p, raw, self.compact_a.x,
-                               self.peak_fn() if self.compact.mode() == "media" else 0.0)
+                               self._pk() if self.compact.mode() == "media" else 0.0)
             p.restore()
             # 播放键命中区是 compact 用原始坐标记的，映射回窗口坐标才能点中
             pr = self.compact.play_rect
@@ -1846,6 +1895,32 @@ class Island(QtWidgets.QWidget):
                     pr.width() * s, pr.height() * s)
 
     # ================================================================ 鼠标
+    def _pk(self) -> float:
+        """音乐律动强度（0..1）：瞬时峰值包络 + 自动增益。
+
+        系统 meter 的 GetPeakValue 是线性值，普通音乐大多只到 0.05~0.4，
+        直接乘系数会让柱条"跳不起来"。这里取 attack 瞬时 / release 慢衰，
+        再用近 2.5 秒的最大值做归一，使任意音量下都能跳到满幅。
+        """
+        try:
+            raw = float(self.peak_fn())
+        except Exception:  # noqa: BLE001
+            raw = 0.0
+        raw = max(0.0, min(1.0, raw))
+        now = time.monotonic()
+        dt = now - self._pk_t if self._pk_t else 0.0
+        dt = max(0.0, min(dt, 0.05))
+        self._pk_t = now
+        if dt > 0.0:
+            self._pk_env = max(raw, self._pk_env * math.exp(-dt / 0.30))
+            self._pk_hi = max(self._pk_env, self._pk_hi * math.exp(-dt / 2.5))
+        else:
+            self._pk_env = max(raw, self._pk_env)
+        self._pk_hi = max(self._pk_hi, 0.05)
+        if self._pk_env < 0.012:          # 静音时不要放大底噪
+            return 0.0
+        return clamp(self._pk_env / self._pk_hi, 0.0, 1.0) ** 0.85
+
     def _inside(self, gp: QtCore.QPoint) -> bool:
         lp = QtCore.QPointF(gp - self._win_origin)
         if self.path.contains(lp):
@@ -1898,6 +1973,16 @@ class Island(QtWidgets.QWidget):
                                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER)
             if not ok:
                 user32.BringWindowToTop(hwnd)
+            # 原生 OpenGL 背景窗是独立顶层窗口，只抬 self 会让玻璃层留在 Finder 栏下面：
+            # 收起态看着"顶部被 Finder 盖住"，点击也像没反应。把它紧跟插到 self 之后，
+            # 两者都在 topmost 组里、Finder 之上。
+            gpu = getattr(self, "gpu_view", None)
+            if gpu is not None:
+                try:
+                    user32.SetWindowPos(int(gpu.winId()), hwnd, 0, 0, 0, 0,
+                                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER)
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception:  # noqa: BLE001
             pass
 
@@ -2007,9 +2092,13 @@ class Island(QtWidgets.QWidget):
         if inside:
             self._out_since = None
             if not self.expanded and self.expand_mode() != "never":
-                if self._hover_since is None:
+                # hover_expand_ms <= 0：关闭「悬停 N 秒自动放大岛」，只有点击才展开
+                ms = int(cfg.get("island.hover_expand_ms", 5000) or 0)
+                if ms <= 0:
+                    self._hover_since = None
+                elif self._hover_since is None:
                     self._hover_since = now
-                elif (now - self._hover_since) * 1000 >= cfg.get("island.hover_expand_ms", 5000) \
+                elif (now - self._hover_since) * 1000 >= ms \
                         and not (user32.GetAsyncKeyState(0x01) & 0x8000):
                     self._hover_since = None
                     self.expand()
@@ -2173,9 +2262,19 @@ class Island(QtWidgets.QWidget):
         # WGC honors WDA_EXCLUDEFROMCAPTURE, giving the lens the real pixels
         # behind the island instead of a stale self-portrait. Other themes
         # retain the user's screen-recording visibility preference.
-        exclude_from_capture(hwnd, not visible or theme.liquid)
+        # island.capture_self=True：液态主题下也解除排除，方便截图/录屏展示界面
+        # （代价是玻璃背景会取到自家上一帧，只在需要出图时打开）。
+        allow_shot = bool(cfg.get("island.capture_self", False))
+        exclude_from_capture(hwnd, not visible or (theme.liquid and not allow_shot))
         self.backdrop.hwnd = hwnd
         self.backdrop.self_exclude = False
+        # 玻璃层是独立窗口，捕获属性要单独同步一次，否则切换后它还留在旧状态
+        gpu = getattr(self, "gpu_view", None)
+        if gpu is not None:
+            try:
+                gpu.sync_geometry()
+            except Exception:  # noqa: BLE001
+                pass
 
     def expand_mode(self) -> str:
         m = cfg.get("island.expand_mode")

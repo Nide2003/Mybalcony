@@ -36,6 +36,11 @@ class G:
     PLANE = "\uE709"      # 飞行模式
     BT = "\uE702"
     USB = "\uE88E"
+    HEADPHONE = "\uE7F6"   # 耳机（N9 系列）
+    MOUSE = "\uE962"
+    KEYBOARD = "\uE765"
+    GAMEPAD = "\uE7FC"
+    TABLET = "\uE70A"
     LOCK = "\uE72E"       # 加密网络的锁
     GLOBE = "\uE774"
     SNIP = "\uE924"

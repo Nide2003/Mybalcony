@@ -30,6 +30,7 @@ DEFAULTS: dict = {
         "hover_expand_ms": 5000,
         "collapse_delay_ms": 320,
         "exclude_from_capture": False,  # False = 灵动岛出现在截图 / 录屏里（取背景时只临时排除自己）
+        "capture_self": False,          # True = 液态主题下也不把岛排除在截图外（出图/录屏展示时开）
         "blur_fps": 90,
         "scale": 1.0,                  # 收起态顶栏胶囊缩放 0.70~1.30（展开面板不受影响）
         "default_tab": "home",
@@ -49,7 +50,9 @@ DEFAULTS: dict = {
     },
     "media": {
         "auto_show": True,           # 开始播放时收起态自动切到音乐（暂停 8 秒后切回）
-        "lyrics": True,              # 收起态显示歌词（网易云公开歌词接口）
+        "lyrics": True,              # 收起态显示歌词（洛雪 → 网易云公开歌词接口 → LRCLIB）
+        "lyric_eapi": True,          # 用洛雪同款 eapi 接口取逐字歌词（yrc）；关掉则用旧公开接口
+        "lx_api": "http://127.0.0.1:23330",  # 洛雪音乐「开放 API 服务」地址；空 = 不用洛雪
         "lyric_lead": 0.25,          # 歌词提前量（秒）：扫光跟不上就调大，抢拍就调小，范围 0–0.9
         "netease_log": True,         # 读取网易云本地日志获得播放状态与进度（网易云默认不接入系统媒体控件）
         "priority": ["cloudmusic", "bilibili", "chrome", "zen", "msedge", "firefox"],

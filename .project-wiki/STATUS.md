@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-11-23
+Last updated: 2026-11-25
 
 ## Current Focus
 
@@ -42,11 +42,46 @@ Last updated: 2026-11-23
   cannot look like it spills past the outline; the rim stays *clear*, only the warping tapers.
   The full-island uniforms (`clarity`, `refractSpan`) were removed; dispersion stays 0;
   premultiplied RGB <= alpha.
-- Normal runtime configuration is hover expansion, unpinned, with a 90 FPS capture target
-  and a five-second large-island hover delay.
+- Runtime interaction is **click-to-expand**: `island.hover_expand_ms = 0` disables the
+  five-second hover open (`ms <= 0` never accumulates `_hover_since`), while hover still opens
+  the medium content and the dock-bar one-line lyric expand is unchanged. Restoring 5000 brings
+  the timed hover back.
+- Capture and idle scheduling ran a performance pass ("A"): DXCam capture
+  `glass.LIVE_TARGET_FPS` 90 → 60, the collapsed backdrop is capped at 30fps by
+  `island._bg_relaxed()`, and `island._idle_gpu()` drops the foreground to 45fps when the
+  cursor is >120px away, the spring is at rest and the island is collapsed. Idle CPU
+  152.3% → 102.9% with RSS 396 → 378MB.
+- Lyrics resolve **word-level timing** without LX Music installed: the cascade is LX local API
+  (`media.lx_api`, same-track only) → NetEase `eapi` yrc (LX's wy source, pure-Python AES) →
+  NetEase public API → LRCLIB. `Lyrics.words` drives a per-character sweep; empty results now
+  expire after 240s and a 6s retry tick re-fetches after the 60s failure cooldown, so one
+  dropped request no longer kills lyrics for the whole track.
+- Liquid menus and overlay icons are **backdrop-aware**: above `LIGHT_IN = 0.58` luminance
+  menu items and overlay glyphs flip to `LIGHT_INK` with a light stroke (plus a ≤0.34 readability
+  scrim), below it they stay white with a black stroke. `MENU_QSS` no longer sets `color`, which
+  used to double-paint every item through `QStyleSheetStyle`.
+- The lyric energy meter reads through `island._pk()` (instant attack, 0.30s release,
+  2.5s auto-gain) so the 0.03–0.35 peaks the system reports drive bars to full travel; compact
+  busy states repaint at 11ms instead of taking the 2-of-3 GPU skip.
 
 ## Recent Wiki Updates
 
+- 2026-11-25: **Word-level lyrics without LX Music**, backdrop-aware menus, lyric-meter gain and
+  click-only expansion. Lyrics cascade is LX local API → NetEase `eapi` yrc (LX's wy source with
+  a pure-Python AES, FIPS-197 verified) → public NetEase → LRCLIB; yrc's JSON-header and
+  `[start,dur](start,dur,0)word…` forms are converted into the project's inline word-time LRC
+  dialect. Empty lyric results expire after `EMPTY_TTL = 240s` and a 6s retry tick re-fetches
+  after the 60s cooldown, fixing "no lyrics for the whole track". Liquid menus gained
+  `_lum_of()`/`_menu_scrim()` and a light/dark ink split (measured text band min 21.7 on white,
+  median 238.3 on black) and `MENU_QSS` dropped its `color` rule. `island._pk()` adds attack/release
+  envelope plus 2.5s auto-gain (bars `3 + 17·b`), compact busy states repaint at 11ms.
+  `island.hover_expand_ms = 0` makes expansion click-only.
+- 2026-11-24: **Backdrop-aware overlay ink, three-row battery viewport, peripheral icons, perf A**.
+  `widgets.backdrop_luminance`/`glass_ink` flip device rows, battery rings, home tiles and icon
+  buttons to `LIGHT_INK` above `LIGHT_IN = 0.58`; `BatteryPage` became a fixed 3-row viewport with
+  smooth `ScrollArea` wheel scrolling; `services/atkdev.py` + `ui/devicon.py` identify ATK
+  (VID `0x373B`) and Razer peripherals; weather auto-locate resolves 泉州; performance A cut idle
+  CPU 152.3% → 102.9% (DXCam 60fps, 30fps collapsed backdrop, 45fps idle foreground).
 - 2026-11-23: **Removed the black rim** introduced by the earlier `lightBg` bevel, and pinned the
   light to the **bottom-left**. The shader no longer darkens any part of the perimeter (the
   `rimPx` thickness absorption and `shadeAmt` backlight term are gone) — the rim is additive

@@ -61,6 +61,92 @@ _BAND_LABEL = {0: "自动", 1: "2.4G", 2: "5G", 3: "6G"}
 _AUTH_LABEL = {0: "WPA2", 1: "混合", 2: "WPA3"}
 
 
+# ---------------- 当前 Wi-Fi 连接（wlanapi 纯查询：不扫描、不闪位置图标） ----------------
+try:
+    _wlanapi = ctypes.WinDLL("wlanapi", use_last_error=True)
+except Exception:  # noqa: BLE001
+    _wlanapi = None
+
+_WLAN_OP_CUR_CONN = 7                    # wlan_intf_opcode_current_connection
+_WLAN_ST_CONNECTED = 1
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [("Data1", W.DWORD), ("Data2", W.WORD), ("Data3", W.WORD), ("Data4", W.BYTE * 8)]
+
+
+class _DOT11_SSID(ctypes.Structure):
+    _fields_ = [("uSSIDLength", W.ULONG), ("ucSSID", W.BYTE * 32)]
+
+
+class _WLAN_ASSOC(ctypes.Structure):
+    _fields_ = [("dot11Ssid", _DOT11_SSID), ("dot11BssType", W.UINT), ("dot11Bssid", W.BYTE * 6),
+                ("dot11PhyType", W.UINT), ("uDot11PhyIndex", W.ULONG),
+                ("wlanSignalQuality", W.ULONG), ("ulRxRate", W.ULONG), ("ulTxRate", W.ULONG)]
+
+
+class _WLAN_SEC(ctypes.Structure):
+    _fields_ = [("bSecurityEnabled", W.BOOL), ("bOneXEnabled", W.BOOL),
+                ("dot11AuthAlgorithm", W.UINT), ("dot11CipherAlgorithm", W.UINT)]
+
+
+class _WLAN_CONN(ctypes.Structure):
+    _fields_ = [("isState", W.UINT), ("wlanConnectionMode", W.UINT), ("strProfileName", W.WCHAR * 256),
+                ("wlanAssociationAttributes", _WLAN_ASSOC),
+                ("wlanSecurityAttributes", _WLAN_SEC)]
+
+
+class _WLAN_IFACE(ctypes.Structure):
+    _fields_ = [("InterfaceGuid", _GUID), ("strInterfaceDescription", W.WCHAR * 256),
+                ("isState", W.UINT)]
+
+
+class _WLAN_IFACE_LIST(ctypes.Structure):
+    _fields_ = [("dwNumberOfItems", W.DWORD), ("dwIndex", W.DWORD), ("InterfaceInfo", _WLAN_IFACE * 1)]
+
+
+def wlan_current() -> tuple[str, int]:
+    """当前已连接的 Wi-Fi -> (SSID, 信号百分比)；没连接返回 ("", 0)。"""
+    if _wlanapi is None:
+        return "", 0
+    handle = W.HANDLE()
+    neg = W.DWORD()
+    if _wlanapi.WlanOpenHandle(2, None, ctypes.byref(neg), ctypes.byref(handle)) != 0:
+        return "", 0
+    lst = None
+    try:
+        lst = ctypes.POINTER(_WLAN_IFACE_LIST)()
+        if _wlanapi.WlanEnumInterfaces(handle, None, ctypes.byref(lst)) != 0 or not lst:
+            return "", 0
+        items = ctypes.cast(lst.contents.InterfaceInfo, ctypes.POINTER(_WLAN_IFACE))
+        for i in range(int(lst.contents.dwNumberOfItems)):
+            if int(items[i].isState) != _WLAN_ST_CONNECTED:
+                continue
+            data = ctypes.POINTER(_WLAN_CONN)()
+            size = W.DWORD()
+            op = W.DWORD()
+            rc = _wlanapi.WlanQueryInterface(handle, ctypes.byref(items[i].InterfaceGuid),
+                                             _WLAN_OP_CUR_CONN, None, ctypes.byref(size),
+                                             ctypes.byref(data), ctypes.byref(op))
+            if rc == 0 and data:
+                a = data.contents.wlanAssociationAttributes
+                n = int(a.dot11Ssid.uSSIDLength)
+                ssid = bytes(a.dot11Ssid.ucSSID[:n]).decode("utf-8", "replace")
+                if not ssid:
+                    ssid = data.contents.strProfileName or ""   # 个别驱动不回报 SSID，退回配置名
+                return ssid, int(a.wlanSignalQuality)
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        if lst:
+            try:
+                _wlanapi.WlanFreeMemory(lst)
+            except Exception:  # noqa: BLE001
+                pass
+        _wlanapi.WlanCloseHandle(handle, None)
+    return "", 0
+
+
 class RadioService(QtCore.QObject):
     """changed(dict): {wifi_on, wifi_ssid, wifi_signal(int % 或 None), bt_on,
     wifi_available, bt_available}"""
@@ -73,7 +159,7 @@ class RadioService(QtCore.QObject):
         super().__init__(parent)
         ui(lambda: None)
         self.state: dict = {"wifi_on": False, "wifi_ssid": "", "wifi_signal": None,
-                            "bt_on": False, "wifi_available": False, "bt_available": False,
+                            "bt_on": False, "bt_connected": 0, "wifi_available": False, "bt_available": False,
                             "hotspot_on": False, "hotspot_available": False, "hotspot_ssid": "",
                             "hotspot_clients": 0, "airplane_on": False, "airplane_available": False}
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -169,7 +255,24 @@ class RadioService(QtCore.QObject):
         except Exception:  # noqa: BLE001
             traceback.print_exc()
         # 不再调用 netsh wlan 读取 Wi-Fi 名称：Windows 11 24H2 起它算作「访问位置」，
-        # 每次轮询任务栏都会闪位置图标。
+        # 每次轮询任务栏都会闪位置图标。改用 wlanapi 的 current_connection 纯查询。
+        if st.get("wifi_on"):
+            ssid, q = wlan_current()
+            st["wifi_ssid"] = ssid
+            st["wifi_signal"] = q or None
+        else:
+            st["wifi_ssid"] = ""
+            st["wifi_signal"] = None
+        # 蓝牙只统计"真正连上"的设备（配对但离线的不算），30s 一次，开销可接受
+        st["bt_connected"] = 0
+        if st.get("bt_on"):
+            try:
+                from .bluetooth import _enumerate, _probe
+                rows = await _enumerate()
+                await _probe(rows)
+                st["bt_connected"] = sum(1 for x in rows if x.get("connected"))
+            except Exception:  # noqa: BLE001
+                pass
         try:
             await self._hotspot(st)
         except Exception:  # noqa: BLE001

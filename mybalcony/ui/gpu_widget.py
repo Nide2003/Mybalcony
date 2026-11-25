@@ -11,6 +11,8 @@ import math
 
 from PySide6 import QtCore, QtGui, QtOpenGLWidgets
 
+from .glass import REFRACT_BAND_SCALE
+
 # 中心 5x5 透亮高斯：5-tap 一维核，采样偏移为整数步长 -2..2，权重 exp(-0.5*(t/sigma)^2)。
 # sigma 小 → 模糊极轻、背景透亮可辨，不会像 33-tap/sigma9 那样糊成磨砂。
 # sigma 与采样步长同步放大：5-tap 的空间覆盖是 ±2×步长，只调 sigma 不改步长的话核
@@ -429,7 +431,8 @@ class GlassGLWidget(QtOpenGLWidgets.QOpenGLWidget):
         GL.glUniform2f(self._uniform("halfSize"), hw, hh)
         GL.glUniform1f(self._uniform("cornerRadius"), corner)
         GL.glUniform1f(self._uniform("thickness"), thickness)
-        GL.glUniform1f(self._uniform("bandWidth"), min(45.0, max(9.0, thickness * 3.6)))
+        GL.glUniform1f(self._uniform("bandWidth"),
+                       min(45.0, max(9.0, thickness * 3.6)) * REFRACT_BAND_SCALE)
         GL.glUniform1f(self._uniform("amplitude"), 1.2)
         GL.glUniform1f(self._uniform("dispersion"), 0.0)
         GL.glUniform1f(self._uniform("lensScale"), 1.0)

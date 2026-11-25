@@ -443,6 +443,9 @@ def main():
         a = menu.addAction(("✓  " if ctx.weather.auto_locate() else "    ") + "天气自动定位当前位置")
         a.triggered.connect(lambda: (cfg.set("weather.auto_locate", not ctx.weather.auto_locate()),
                                      ctx.weather.relocate(), ctx.weather.refresh()))
+        a = menu.addAction(("✓  " if cfg.get("island.capture_self", False) else "    ") + "允许截到自己")
+        a.triggered.connect(lambda: (cfg.set("island.capture_self", not bool(cfg.get("island.capture_self", False))),
+                                     island.apply_capture_mode()))
         a = menu.addAction(("✓  " if autostart_enabled() else "    ") + "开机自启")
         a.triggered.connect(lambda: set_autostart(not autostart_enabled()))
         menu.addAction("打开数据目录").triggered.connect(lambda: os.startfile(str(DATA_DIR)))  # noqa: S606

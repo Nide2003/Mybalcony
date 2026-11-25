@@ -14,6 +14,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from .anim import clamp
 from .theme import G, W, apply_qss_text_shadow, icon_font, theme, ui_font
 from .widgets import Hoverable, LineEdit, PillButton, Segmented, Switch, painter
+from .devicon import dev_glyph
 from ..core import bg
 from ..services import bluetooth, wifi
 
@@ -436,7 +437,7 @@ def open_bluetooth(ctx, island, anchor) -> CCPanel:
         for d in rows[:8]:
             lv = d.get("battery")
             right = f"{lv}%" if lv is not None else ("已连接" if d.get("connected") else "未连接")
-            glyph = G.USB if d.get("kind") == "usb" else G.BT
+            glyph = dev_glyph(d)
             p.add_row(CCRow(glyph, d.get("name") or "未知设备", right=right,
                             active=bool(d.get("connected")), lock=False))
         p.add_footer([("设备电量", lambda: island.show_page("bat") if island else None),

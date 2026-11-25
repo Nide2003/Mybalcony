@@ -12,13 +12,46 @@ import time
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import glass
-from .theme import theme
+from .theme import LIGHT_IN, LIGHT_INK, theme
 from .theme import ui_font as _ui_font
 
 Qt = QtCore.Qt
 
 DOWN = 3                    # 弹层很小，抓屏可以更清楚一点
 TTL = 0.8                   # 抓到的背景最多沿用 0.8 秒
+
+
+def _lum_of(img: QtGui.QImage | None) -> float | None:
+    """背景图（已缩到极小）的加权亮度；没有抓到桌面时返回 None。"""
+    if img is None or img.isNull():
+        return None
+    small = img.scaled(1, 1, QtCore.Qt.AspectRatioMode.IgnoreAspectRatio,
+                       QtCore.Qt.TransformationMode.SmoothTransformation)
+    c = small.pixelColor(0, 0)
+    return c.redF() * 0.299 + c.greenF() * 0.587 + c.blueF() * 0.114
+
+
+def _menu_scrim(p: QtGui.QPainter, rect: QtCore.QRectF, radius: float, lum: float):
+    """菜单可读性蒙版：纯白壁纸上把玻璃压成烟灰色，纯黑壁纸上提一点亮。
+
+    菜单是顶层窗口，没有岛那样的 backdrop 对象，转折射 + 白字在黑边之外还需要
+    一个"底"。这里按采到的背景亮度叠一层很轻的色（白底最多 0.34 黑、黑底最多
+    0.14 白），既不破坏玻璃观感，又让字和背景拉开明度差。
+    """
+    if lum >= 0.55:
+        a = min(88, int(round(10 + (lum - 0.55) / 0.45 * 70)))
+        col = QtGui.QColor(12, 14, 20, a)
+    elif lum <= 0.30:
+        a = min(36, int(round((0.30 - lum) / 0.30 * 34)))
+        col = QtGui.QColor(255, 255, 255, a)
+    else:
+        return
+    path = QtGui.QPainterPath()
+    path.addRoundedRect(rect, radius, radius)
+    p.save()
+    p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    p.fillPath(path, col)
+    p.restore()
 
 
 def _panel_brush(img: QtGui.QImage, rect: QtCore.QRectF) -> QtGui.QBrush | None:
@@ -83,8 +116,13 @@ def paint_chip(p: QtGui.QPainter, rect: QtCore.QRectF, radius: float, fill: QtGu
 
 
 def paint_interactive_chip(p: QtGui.QPainter, widget: QtWidgets.QWidget, rect: QtCore.QRectF,
-                           radius: float, hover: float = 0.0, press: float = 0.0):
-    """交互控件的薄玻璃：共享岛体快照，控件自身只做轻雾化和跟手光学反馈。"""
+                           radius: float, hover: float = 0.0, press: float = 0.0,
+                           nav: bool = False):
+    """交互控件的薄玻璃：共享岛体快照，控件自身只做轻雾化和跟手光学反馈。
+
+    nav=True 时改用导航条那条玻璃的配方：1/11 强雾化 + 很淡的白 tint（15），
+    让磁贴 / 卡片的观感和顶部导航胶囊一致，而不是一块偏白的板子。
+    """
     hover = max(0.0, min(1.0, hover))
     press = max(0.0, min(1.0, press))
     win = widget.window()
@@ -93,7 +131,9 @@ def paint_interactive_chip(p: QtGui.QPainter, widget: QtWidgets.QWidget, rect: Q
     hr = getattr(backdrop, "hi_rect", QtCore.QRect())
     origin = getattr(win, "_win_origin", win.mapToGlobal(QtCore.QPoint(0, 0)))
     if hi is None or hi.isNull() or hr.isEmpty():
-        paint_chip(p, rect, radius, QtGui.QColor(248, 250, 254, round(30 + 18 * hover)), hover > 0.35)
+        paint_chip(p, rect, radius,
+                   (QtGui.QColor(255, 255, 255, round(15 + 10 * hover)) if nav
+                    else QtGui.QColor(248, 250, 254, round(30 + 18 * hover))), hover > 0.35)
         return
     top = widget.mapTo(win, rect.topLeft().toPoint())
     global_rect = QtCore.QRectF(top.x() + origin.x(), top.y() + origin.y(), rect.width(), rect.height())
@@ -110,7 +150,9 @@ def paint_interactive_chip(p: QtGui.QPainter, widget: QtWidgets.QWidget, rect: Q
                                 global_rect.width() * sx, global_rect.height() * sy).toAlignedRect()
     source_rect = source_rect.intersected(hi.rect())
     if source_rect.width() < 4 or source_rect.height() < 4:
-        paint_chip(p, rect, radius, QtGui.QColor(248, 250, 254, round(30 + 18 * hover)), hover > 0.35)
+        paint_chip(p, rect, radius,
+                   (QtGui.QColor(255, 255, 255, round(15 + 10 * hover)) if nav
+                    else QtGui.QColor(248, 250, 254, round(30 + 18 * hover))), hover > 0.35)
         return
     dpr = max(1.0, min(2.0, widget.devicePixelRatioF()))
     img = QtGui.QImage(max(2, round(rect.width() * dpr)), max(2, round(rect.height() * dpr)),
@@ -125,11 +167,16 @@ def paint_interactive_chip(p: QtGui.QPainter, widget: QtWidgets.QWidget, rect: Q
     path.addRoundedRect(local, radius, radius)
     qp.setClipPath(path)
     sample = hi.copy(source_rect)
-    blur = max(5.0, min(rect.width(), rect.height()) * (0.30 + 0.10 * press))
+    if nav:
+        blur = 11.0                                  # 与 NAV_GLASS_BLUR 一致
+    else:
+        blur = max(5.0, min(rect.width(), rect.height()) * (0.30 + 0.10 * press))
     small = sample.scaled(max(2, round(sample.width() / blur)), max(2, round(sample.height() / blur)),
                           Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
     qp.drawImage(local, small)
-    paint_chip(qp, local, radius, QtGui.QColor(248, 250, 254, round(42 + 16 * hover + 8 * press)), hover > 0.35)
+    fill = (QtGui.QColor(255, 255, 255, round(15 + 10 * hover + 8 * press)) if nav
+            else QtGui.QColor(248, 250, 254, round(42 + 16 * hover + 8 * press)))
+    paint_chip(qp, local, radius, fill, hover > 0.35)
     if press > 0.01:
         lens = QtGui.QRadialGradient(local.center(), max(local.width(), local.height()) * 0.58)
         lens.setColorAt(0.0, QtGui.QColor(255, 255, 255, round(34 * press)))
@@ -338,7 +385,7 @@ def paint_panel(p: QtGui.QPainter, widget: QtWidgets.QWidget, rect: QtCore.QRect
 # 只有 color / font-family / font-size 时才会把菜单项转发给 base style。
 # 因此 MENU_QSS 只保留字色与字体；底色仍是项目原有的液态玻璃（MenuGlass._paint 的
 # paint_panel），文字由 LiquidMenuStyle 画成白字黑边。
-MENU_QSS = "QMenu{{color:{fg};font-family:{fonts};font-size:13px}}"
+MENU_QSS = "QMenu{{font-family:{fonts};font-size:13px}}"
 
 LIQUID_MENU_RADIUS = 14.0         # 与 paint_panel 的菜单圆角一致
 LIQUID_MENU_ITEM_RADIUS = 9.0     # 选中高亮的圆角（沿用原 QSS ::item 的 9px）
@@ -353,7 +400,10 @@ LIQUID_MENU_DISABLED = QtGui.QColor(176, 180, 188)   # 禁用项：灰色语义�
 _MENU_SEL_CACHE: dict = {}
 
 
-def _menu_selection_color() -> QtGui.QColor:
+def _menu_selection_color(light: bool = False) -> QtGui.QColor:
+    if light:
+        # 亮底（纯白壁纸）上白色高亮等于没有，换成深色高亮
+        return QtGui.QColor(10, 12, 16, 46)
     """选中高亮：用 palette 里 menu[2] 的原值（含原 alpha），不额外加深。
 
     QColor 不认识 QSS 的 rgba(...) 字符串，所以手动解析数字；这里只做转换，
@@ -429,12 +479,19 @@ class _LiquidMenuStyle(QtWidgets.QProxyStyle):
         if element != QtWidgets.QStyle.ControlElement.CE_MenuItem or \
                 not isinstance(option, QtWidgets.QStyleOptionMenuItem):
             return super().drawControl(element, option, painter, widget)
+        menu = getattr(self, "lg_menu", None)
+        dev = painter.device()
+        if menu is None and isinstance(dev, QtWidgets.QMenu):
+            menu = dev
+        lum = getattr(menu, "_lg_lum", None) if menu is not None else None
+        light = lum is not None and lum > LIGHT_IN
 
         if option.menuItemType == QtWidgets.QStyleOptionMenuItem.MenuItemType.Separator:
             r = QtCore.QRectF(option.rect)
             y = r.center().y()
             painter.save()
-            painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 46), 1.0))
+            painter.setPen(QtGui.QPen(QtGui.QColor(18, 20, 26, 60) if light
+                                      else QtGui.QColor(255, 255, 255, 46), 1.0))
             painter.drawLine(QtCore.QPointF(r.left() + LIQUID_MENU_PAD_LEFT, y),
                              QtCore.QPointF(r.right() - LIQUID_MENU_PAD_RIGHT, y))
             painter.restore()
@@ -451,7 +508,7 @@ class _LiquidMenuStyle(QtWidgets.QProxyStyle):
             path = QtGui.QPainterPath()
             path.addRoundedRect(QtCore.QRectF(option.rect),
                                 LIQUID_MENU_ITEM_RADIUS, LIQUID_MENU_ITEM_RADIUS)
-            painter.fillPath(path, _menu_selection_color())
+            painter.fillPath(path, _menu_selection_color(light))
         painter.restore()
 
         # 让 base style 画背景之外的一切（图标 / ✓ / 子菜单箭头），但**不画文字**：
@@ -461,9 +518,10 @@ class _LiquidMenuStyle(QtWidgets.QProxyStyle):
         base_opt.state = option.state & ~(QtWidgets.QStyle.StateFlag.State_Selected |
                                           QtWidgets.QStyle.StateFlag.State_MouseOver)
         pal = QtGui.QPalette(base_opt.palette)
+        arrow_col = QtGui.QColor(*LIGHT_INK) if light else theme.text()
         for role in (QtGui.QPalette.ColorRole.Text, QtGui.QPalette.ColorRole.WindowText,
                      QtGui.QPalette.ColorRole.HighlightedText):
-            pal.setColor(role, theme.text())
+            pal.setColor(role, arrow_col)
         base_opt.palette = pal
         super().drawControl(element, base_opt, painter, widget)
 
@@ -480,7 +538,12 @@ class _LiquidMenuStyle(QtWidgets.QProxyStyle):
             right -= LIQUID_MENU_ARROW
         rect = QtCore.QRect(left, option.rect.top() + 4,
                             max(4, right - left), max(4, option.rect.height() - 8))
-        color = theme.text() if enabled else QtGui.QColor(LIQUID_MENU_DISABLED)
+        if enabled:
+            color = QtGui.QColor(*LIGHT_INK) if light else theme.text()
+        else:
+            color = (QtGui.QColor(108, 113, 122) if light
+                     else QtGui.QColor(LIQUID_MENU_DISABLED))
+        edge = QtGui.QColor(255, 255, 255) if light else None
         painter.save()
         painter.setFont(_ui_font(LIQUID_MENU_TEXT_PX))
         painter.setPen(color)
@@ -488,7 +551,7 @@ class _LiquidMenuStyle(QtWidgets.QProxyStyle):
                             QtCore.Qt.AlignmentFlag.AlignLeft |
                             QtCore.Qt.AlignmentFlag.AlignVCenter |
                             QtCore.Qt.TextFlag.TextSingleLine,
-                            text, color=color)
+                            text, color=color, edge=edge)
         painter.restore()
 
 
@@ -526,6 +589,7 @@ class MenuGlass(QtCore.QObject):
         m.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
         m.setProperty("lg_prev", m.styleSheet())
         style = _LiquidMenuStyle()
+        style.lg_menu = m          # 反色需要菜单的底亮度：render/离屏时 painter.device() 不是 QMenu
         _MENU_STYLE_REFS[m] = (style, _prev_menu_style(m))
         # 顺序：先 setStyle 再 setStyleSheet。QSS 里没有 background/item 规则时
         # QStyleSheetStyle 才转发 CE_MenuItem 给代理样式（见 MENU_QSS 处的实测说明）。
@@ -569,6 +633,12 @@ class MenuGlass(QtCore.QObject):
     @staticmethod
     def _paint(m: QtWidgets.QMenu):
         p = QtGui.QPainter(m)
+        rect = QtCore.QRectF(m.rect())
         # capture=True：命中 Show 时抓好的缓存；万一缓存过期才会重抓
-        paint_panel(p, m, QtCore.QRectF(m.rect()), 14.0)
+        paint_panel(p, m, rect, LIQUID_MENU_RADIUS)
+        cache = getattr(m, "_lg_cache", None)
+        lum = _lum_of(cache[1] if cache else None)
+        m._lg_lum = lum            # 文字反色用（_LiquidMenuStyle 从 painter.device() 读）
+        if lum is not None:
+            _menu_scrim(p, rect, LIQUID_MENU_RADIUS, lum)
         p.end()

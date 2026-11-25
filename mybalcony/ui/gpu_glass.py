@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui
 
+from .glass import REFRACT_BAND_SCALE
+
 _VERTEX = """#version 330 core
 out vec2 uv;
 void main() {
@@ -22,6 +24,7 @@ uniform vec2 lensCenter;
 uniform vec2 halfSize;
 uniform float cornerRadius;
 uniform float thickness;
+uniform float bandWidth;
 uniform float amplitude;
 uniform float lensScale;
 uniform float ringFade;
@@ -33,7 +36,7 @@ void main() {
     vec2 outer = max(q, 0.0);
     float outside = length(outer);
     float sd = outside + min(max(q.x, q.y), 0.0) - cornerRadius;
-    float band = clamp(1.0 - max(-sd, 0.0) / thickness, 0.0, 1.0);
+    float band = clamp(1.0 - max(-sd, 0.0) / bandWidth, 0.0, 1.0);
     float circleMap = 1.0 - sqrt(max(1.0 - band * band, 0.0));
     vec2 gradient = vec2(
         q.x > 0.0 ? outer.x / max(outside, 0.000001) * sign(p.x) : (q.x > q.y ? sign(p.x) : 0.0),
@@ -153,6 +156,7 @@ class GpuRefractor:
         GL.glUniform2f(self._uniform("halfSize"), hw, hh)
         GL.glUniform1f(self._uniform("cornerRadius"), corner)
         GL.glUniform1f(self._uniform("thickness"), thickness)
+        GL.glUniform1f(self._uniform("bandWidth"), max(2.0, thickness * REFRACT_BAND_SCALE))
         GL.glUniform1f(self._uniform("amplitude"), amp_k)
         GL.glUniform1f(self._uniform("lensScale"), lens)
         GL.glUniform1f(self._uniform("ringFade"), ring_fade)

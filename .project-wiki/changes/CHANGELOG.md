@@ -1,5 +1,83 @@
 # Project Changelog
 
+## 2026-11-25 (verbatim lyrics from LX Music's source, menu contrast, lyric energy)
+
+Lyrics — the cascade now resolves word-level timing without installing LX Music:
+
+- `services/netease_eapi.py` reuses LX Music's wy lyric source: POST
+  `https://interface3.music.163.com/eapi/song/lyric/v1` with `params = AES-128-ECB(
+  "<url>-36cd479b6b5-<json>-36cd479b6b5-<md5>")`, key `e82ckenh8dichen8`,
+  `message = f"nobody{path}use{text}md5forencrypt"`. `yrc` arrives in two shapes — a JSON
+  header `{"t":0,"c":[{"tx":"作词: "}]}` followed by `[1,4890](1,270,0)词(270,270,0)版…`
+  — and `yrc_to_lrc()` turns both into the project's inline `<mm:ss.mmm>` word dialect, so
+  `parse_lrc_words()` yields a per-character timeline.
+- `services/aes.py`: pure-Python AES-128-ECB + PKCS#7, because no crypto wheel can be
+  installed on this machine (pip direct and the Tsinghua mirror both reset). Verified against
+  the FIPS-197 vector `69c4e0d86a7b0430d8cdb78070b4c55a`.
+- `services/lxsource.py`: read-only client for LX Music's local open API
+  (`media.lx_api`, default `http://127.0.0.1:23330`; `/status`, `/lyric-all`; 0.6s timeout,
+  25s down-cooldown). Used only when LX itself is playing the same track
+  (`lx_same_song`: equal core title + same artist, or duration within 3s).
+- `lyrics.py`: cascade is LX → NetEase eapi → NetEase public API → LRCLIB.
+  `Lyrics.words` + `progress()` advance per character when word times exist.
+- Fixed a silent "no lyrics forever" bug: an empty result used to be cached for the whole
+  process, so one dropped request left the island lyric-less for the entire track. Empty
+  results now expire after `EMPTY_TTL = 240s`, unreachable search raises instead of returning
+  "no such song", and `_retry_tick()` re-fetches the current track 6s after the 60s
+  `FAIL_COOLDOWN`. Failures log `[lyrics] <key> 取词失败: …`.
+- Measured: 孤勇者 (id 1901371647) 52/52 lines with per-char times in 1128ms; sweep position
+  at t+0.3/0.6/0.9s is 0.021/0.042/0.062 with word timing versus 0.084/0.168/0.252 for
+  whole-line interpolation. 晴天 / 爱情悬崖 return no `yrc` and fall back to plain LRC.
+
+Menus:
+
+- `ui/liquid.py`: liquid menus are top-level windows with no backdrop object, so every item
+  was white + stroke and invisible on a white app. Added `_lum_of()` (1×1 downscale weighted
+  luminance), `_menu_scrim()` (up to 0.34 black on light, 0.14 white on dark), and per-item
+  ink: dark `LIGHT_INK` with a white stroke above `LIGHT_IN`, white with a black stroke below.
+  Disabled items, separators and hover highlight flip with the same flag, and `MENU_QSS` lost
+  its `color` rule — it made `QStyleSheetStyle` paint a second white copy of every item on
+  top of the custom outlined text. Measured text-band pixels: min 21.7 on white, median
+  238.3 on black.
+
+Lyric energy meter:
+
+- `ui/island.py._pk()` replaces the raw `GetPeakValue()` read: instantaneous attack,
+  0.30s release envelope, and a 2.5s auto-gain normalisation, so the linear 0.03–0.35 peaks
+  the system reports actually reach full travel. `compact.paint` peaks at
+  `max(peak, last*0.9)` and bars are `3 + 17·b` above a 0.14 baseline inside the 36px capsule.
+- Compact busy states (media/activity/subtitle) now run full frames at `setInterval(11)`; the
+  GPU fast path's 2-of-3 skip only pushes the background texture, so skipping there left the
+  bars at 1/3 the repaint rate and they looked dead.
+
+Interaction:
+
+- `island.hover_expand_ms = 0` disables hover-to-expand (`ms <= 0` ⇒ `_hover_since` never
+  accumulates; click still expands). Restoring 5000 brings the 5s hover open back.
+
+## 2026-11-24 (backdrop-aware ink, 3-row battery viewport, peripherals, performance A)
+
+- `ui/widgets.py`: `backdrop_luminance(w)` + `glass_ink(w, a)` — liquid body text is always
+  white, so overlays vanished on light wallpapers. Overlay inks switch to `LIGHT_INK` above
+  `LIGHT_IN = 0.58` (hysteresis 0.46). Applied to `BatteryRings` (icons and empty slots),
+  `DeviceRow`, home `Action` tiles (plus a white stroke), `IconButton` with
+  `on_light=None` (recomputed per frame, hover tint follows), disc placeholder and app-grid
+  initials. Battery percentage stays white with a black stroke via `theme.outlined_text`.
+- `ui/pages/bluetooth.py`: `BatteryPage` is a fixed three-row viewport (`height=252`,
+  `_LIST_TOP=102`, `_ROW_PITCH=50`, `_VIEW_H=150`, `_BOTTOM_SPACER=6`) so a fourth row can no
+  longer half-show; the bottom edge fade shrank 10 → 4px.
+- `widgets.ScrollArea`: smooth wheel scrolling via `QVariantAnimation` (OutCubic,
+  240ms/320ms), separate pixel and angle-delta paths, slider drag cancels the animation.
+- `services/atkdev.py` + `ui/devicon.py`: ATK peripherals are identified by VID `0x373B` and
+  PID (headset `0x1262`) instead of the generic USB-stick glyph; Razer DeathAdder V3 Pro is
+  matched by HID usage/name keywords.
+- Weather: `weather.auto_locate` enabled, 泉州 resolves to 24.89/118.60; Open-Meteo's
+  Chinese place-name geocoding falls back to wttr.
+- Performance A (`glass.LIVE_TARGET_FPS` 90 → 60 for DXCam; `island._bg_relaxed()` caps the
+  collapsed backdrop at 30fps; `island._idle_gpu()` drops the foreground to 45fps when the
+  cursor is >120px away, the shape is at rest and collapsed): idle CPU 152.3% → 102.9%,
+  RSS 396 → 378MB, backdrop requests 90 → ~30fps.
+
 ## 2026-11-23 (black rim removed; light source pinned to bottom-left, highlight only)
 
 The previous `lightBg` bevel darkened the whole rim to make the island visible on white

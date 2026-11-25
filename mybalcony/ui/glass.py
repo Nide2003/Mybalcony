@@ -20,6 +20,10 @@ DOWN = 12  # 缩小倍数（越大越糊）
 LIQUID_PX_BUDGET = 120000
 LIQUID_DOWN_MIN = 1.4
 LIQUID_DOWN_MAX = 2.6
+LIVE_TARGET_FPS = 60     # DXCam 常驻抓屏帧率；90 → 60 省一整段 CPU，视觉上无感（前景本就 60fps）
+# 折射带（band）相对位移厚度带的倍数：1.0 = 折射线宽与位移厚度一致，
+# 1.5 = 折射带往岛体内部铺开的范围是厚度带的 1.5 倍（位移幅度不变）。
+REFRACT_BAND_SCALE = 1.5
 
 _u32 = ctypes.WinDLL("user32")
 _gdi = ctypes.WinDLL("gdi32")
@@ -341,6 +345,9 @@ def refract(img: QtGui.QImage, rect: QtCore.QRect, body: QtCore.QRectF, radius: 
         cx = (body.center().x() - rect.x()) * scale
         cy = (body.center().y() - rect.y()) * scale
         thickness = max(2.0, min(hw, hh) * (1.0 - flat))
+        # 折射带范围与位移厚度分离：band 按 REFRACT_BAND_SCALE 往内扩，
+        # 位移仍用 thickness，扩大后手感不变、只是折射覆盖更宽。
+        band_thickness = max(2.0, thickness * REFRACT_BAND_SCALE)
 
         xs = np.arange(tiny_w, dtype=np.float32)[None, :]
         ys = np.arange(tiny_h, dtype=np.float32)[:, None]
@@ -350,7 +357,7 @@ def refract(img: QtGui.QImage, rect: QtCore.QRect, body: QtCore.QRectF, radius: 
         ox, oy = np.maximum(qx, 0.0), np.maximum(qy, 0.0)
         outside = np.sqrt(ox * ox + oy * oy)
         sd = outside + np.minimum(np.maximum(qx, qy), 0.0) - corner
-        band = np.clip(1.0 - np.maximum(-sd, 0.0) / thickness, 0.0, 1.0)
+        band = np.clip(1.0 - np.maximum(-sd, 0.0) / band_thickness, 0.0, 1.0)
         circle_map = 1.0 - np.sqrt(np.maximum(1.0 - band * band, 0.0))
 
         safe = np.maximum(outside, 1e-6)
@@ -532,7 +539,9 @@ class LiveDesktop:
             if self._active_region is not None:
                 self._capture.stop()
             x, y, w, h = region
-            self._capture.start(region=(x, y, x + w, y + h), target_fps=90, video_mode=True)
+            # DXCam 常驻抓屏是这台机器上最贵的一段：90fps 抓 ~1000×800 物理像素会吃满一核。
+            # 60fps 对液态玻璃的跟手/折射已经完全够用（前景本身也只有 60fps）。
+            self._capture.start(region=(x, y, x + w, y + h), target_fps=LIVE_TARGET_FPS, video_mode=True)
             self._active_region = region
         frame = self._capture.get_latest_frame_view()
         ticks = self._capture.latest_frame_ticks

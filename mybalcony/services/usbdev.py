@@ -23,6 +23,7 @@ import time
 from ctypes import wintypes as W
 
 from ..core.config import DATA_DIR
+from . import atkdev
 
 HID_GUID = "{4D1E55B2-F16F-11CF-88CB-001111000030}"
 
@@ -43,6 +44,13 @@ GENERIC_NAMES = BLOCK_NAME
 RAZER_VID = 0x1532
 NO_USB_CHANNEL = "该 USB 设备没有通用电量接口"
 NO_PAD_CHANNEL = "手柄没有上报电量（接收器不提供电量通道）"
+
+# HID 标准用途页/用途：按接口用途判设备类别，不依赖品牌 PID 库（雷蛇这类也能认）
+USAGE_MOUSE_IFACE = (0x0001, 0x0002)
+USAGE_JOY_IFACE = (0x0001, 0x0004)
+USAGE_GAMEPAD_IFACE = (0x0001, 0x0005)
+USAGE_KEYBOARD_IFACE = (0x0001, 0x0006)
+USAGE_CONSUMER_IFACE = (0x000C, 0x0001)
 
 
 # ---------------------------------------------------------------- Win32 绑定
@@ -528,6 +536,24 @@ _load_last()
 
 
 
+def _usage_type(usages) -> str | None:
+    """按 HID 用途判类别。
+
+    一个设备会挂多个接口（雷蛇鼠标还带键盘和宏接口），按优先级取主类别：
+    鼠标 > 手柄 > 键盘 > 媒体键。2.4G dongle 往往同时报鼠标和键盘，鼠标优先即正确答案。
+    """
+    s = set(usages or ())
+    if USAGE_MOUSE_IFACE in s:
+        return "mouse"
+    if USAGE_JOY_IFACE in s or USAGE_GAMEPAD_IFACE in s:
+        return "gamepad"
+    if USAGE_KEYBOARD_IFACE in s:
+        return "keyboard"
+    if USAGE_CONSUMER_IFACE in s:
+        return "media"
+    return None
+
+
 def scan_rows() -> list[dict]:
     """USB / 2.4G 外设，返回结构和蓝牙那边一致。
 
@@ -552,9 +578,11 @@ def scan_rows() -> list[dict]:
             key = (d["vid"], d["pid"], name)
             g = groups.get(key)
             if g is None:
-                groups[key] = {**d, "name": name, "vendor": vendor, "paths": [d["path"]]}
+                groups[key] = {**d, "name": name, "vendor": vendor, "paths": [d["path"]],
+                               "usages": {(d["usage"], d.get("usage_id"))}}
             else:
                 g["paths"].append(d["path"])
+                g.setdefault("usages", set()).add((d["usage"], d.get("usage_id")))
                 # Razer 的电量在 feature report 最长的接口上；ATK 的在 0xFF05 那个接口上
                 if d["usage"] == ATK_USAGE:
                     g["path"], g["usage"], g["out"] = d["path"], d["usage"], d["out"]
@@ -590,7 +618,15 @@ def scan_rows() -> list[dict]:
         if level is None and not (pad or real_name
                                   or any(k in g["name"].lower() for k in WIRELESS_HINTS)):
             continue
-        rows.append({"name": g["name"], "mac": "", "kind": "usb", "connected": True,
+        ident = atkdev.identify(g["vid"], g["pid"], g["name"])
+        if ident:
+            display, dev_type = ident
+        else:
+            display = g["name"]
+            # 名字里写明了就信名字（不少键盘会顺带暴露一个鼠标接口），否则看 HID 接口用途
+            dev_type = atkdev.guess_type(g["name"]) or _usage_type(g.get("usages"))
+        rows.append({"name": display, "raw_name": g["name"], "type": dev_type, "mac": "",
+                     "kind": "usb", "connected": True,
                      "battery": level, "note": note, "pad": pad, "stale": stale,
                      "vid": g["vid"], "pid": g["pid"]})
     _flush_last()

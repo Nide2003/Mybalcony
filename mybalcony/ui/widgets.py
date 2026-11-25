@@ -23,6 +23,48 @@ def painter(w: QtWidgets.QWidget) -> QtGui.QPainter:
     return p
 
 
+def backdrop_luminance(w: QtWidgets.QWidget) -> float | None:
+    """控件背后壁纸的平均亮度（0~1）；拿不到背景快照时返回 None。
+
+    液态玻璃的 tint 近乎全透明，白色字形压在玻璃上会跟着壁纸一起"消失"。
+    这里按控件在窗口里的位置，把 backdrop 快照对应区域缩成 1×1 求加权亮度，
+    成本很低（一次缩略），可以在 paintEvent 里直接调。
+    """
+    win = w.window()
+    bd = getattr(win, "backdrop", None)
+    hi = getattr(bd, "hi", None)
+    hr = getattr(bd, "hi_rect", None)
+    if hi is None or hi.isNull() or hr is None or hr.width() <= 0 or hr.height() <= 0:
+        return None
+    if w.width() <= 0 or w.height() <= 0:
+        return None
+    top = w.mapTo(win, QtCore.QPoint(0, 0))
+    origin = getattr(win, "_win_origin", win.mapToGlobal(QtCore.QPoint(0, 0)))
+    sx = hi.width() / float(hr.width())
+    sy = hi.height() / float(hr.height())
+    src = QtCore.QRectF((top.x() + origin.x() - hr.x()) * sx,
+                        (top.y() + origin.y() - hr.y()) * sy,
+                        w.width() * sx, w.height() * sy).toAlignedRect()
+    src = src.intersected(hi.rect())
+    if src.width() < 2 or src.height() < 2:
+        return None
+    c = hi.copy(src).scaled(1, 1, Qt.AspectRatioMode.IgnoreAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation).pixelColor(0, 0)
+    return 0.2126 * c.redF() + 0.7152 * c.greenF() + 0.0722 * c.blueF()
+
+
+def glass_ink(w: QtWidgets.QWidget, a: float = 1.0) -> QtGui.QColor:
+    """压在玻璃上的前景色（图标 / 数字）：亮底切深墨、暗底回白。
+
+    非液态主题直接返回正文色，行为与改动前完全一致；液态下才是"跟随壁纸反色"。
+    阈值与导航胶囊一致（0.58），拿不到背景快照时按亮底处理。
+    """
+    if not theme.liquid:
+        return theme.text(a)
+    lum = backdrop_luminance(w)
+    return theme.glass_ink(lum is None or lum > 0.58, a)
+
+
 def card_geometry(p, r, radius):
     """卡片框 → 设备像素对齐后的（本地框, 圆角, 设备缩放）。
 
@@ -52,6 +94,11 @@ def card_path(p, r, radius):
     path = QtGui.QPainterPath()
     path.addRoundedRect(local, rad, rad)
     return path, scale
+
+
+def squircle_radius(rect) -> float:
+    """苹果黄金比例圆角：半径 = 短边 × 18%（squircle 的等效肉眼看感）。"""
+    return max(6.0, min(rect.width(), rect.height()) * 0.18)
 
 
 class Themed:
@@ -175,10 +222,14 @@ class Hoverable(QtWidgets.QWidget, Themed):
         pad = self.CARD_PAD
         return QtCore.QRectF(self.rect()).adjusted(pad, pad, -pad, -(pad + bottom_extra))
 
-    def paint_card_bg(self, p, r, radius):
-        """液态主题使用共享背景采样的薄玻璃；其他主题保留原有卡片皮肤。"""
+    def paint_card_bg(self, p, r, radius, nav=False):
+        """液态主题使用共享背景采样的薄玻璃；其他主题保留原有卡片皮肤。
+
+        nav=True 走导航条同款玻璃配方（强雾化 + 淡 tint），仅供控制中心这类
+        “按钮背景要和导航胶囊一致”的控件使用。
+        """
         if theme.liquid:
-            paint_interactive_chip(p, self, r, radius, self._hover.x, self._press.x)
+            paint_interactive_chip(p, self, r, radius, self._hover.x, self._press.x, nav=nav)
             return
         card, scale = card_path(p, r, radius)
         hx = clamp(self._hover.x, 0.0, 1.0)
@@ -212,7 +263,8 @@ class IconButton(Hoverable):
         self.active = False
         self.color: QtGui.QColor | None = None
         # 亮底反色：白图标压在纯白背景上会消失。导航栏按背景亮度替自己的按钮翻色，
-        # 其余调用点保持 False（白底场景由使用方决定，不擅自改全局观感）。
+        # 其余调用点保持 False（白底场景由使用方决定，不擅自改全局观感）；
+        # 传 None = 自动：每次绘制按身后壁纸亮度现算，主页这类会随背景变化的地方用它。
         self.on_light = False
         self.setFixedSize(size, size)
         if tip:
@@ -233,8 +285,12 @@ class IconButton(Hoverable):
         if theme.liquid:
             r = self.card_rect()
             self.card_transform(p, r)
+            ol = self.on_light
+            if ol is None:                      # 自动：按身后壁纸亮度定前景，和电量图标同一套
+                lum = backdrop_luminance(self)
+                ol = lum is None or lum > 0.58
             hx = clamp(self._hover.x, 0.0, 1.0)
-            if self.on_light:
+            if ol:
                 # 亮底：玻璃薄片在白背景上等于没有，悬停改用淡墨圆给出反馈
                 if hx > 0.01:
                     p.setPen(Qt.PenStyle.NoPen)
@@ -244,7 +300,7 @@ class IconButton(Hoverable):
             else:
                 self.paint_card_bg(p, r, min(14.0, r.height() / 2))
             p.setFont(icon_font(self.icon_px))
-            p.setPen(theme.glass_ink(self.on_light, 0.94))
+            p.setPen(theme.glass_ink(ol, 0.94))
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.glyph)
             return
         r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
@@ -397,9 +453,10 @@ class Slider(QtWidgets.QWidget, Themed):
     released = QtCore.Signal(float)
     icon_clicked = QtCore.Signal()
 
-    def __init__(self, glyph: str, parent=None, height: int = 34):
+    def __init__(self, glyph: str, parent=None, height: int = 34, nav: bool = False):
         super().__init__(parent)
         self.glyph = glyph
+        self.nav = nav
         self.value = 0.0
         self.shown = Spring(0, 520, 1.0, 0.002)
         self.dragging = False
@@ -473,7 +530,7 @@ class Slider(QtWidgets.QWidget, Themed):
         path = QtGui.QPainterPath()
         path.addRoundedRect(r, rad, rad)
         if theme.liquid:
-            paint_interactive_chip(p, self, r, rad, press=1.0 if self.dragging else 0.0)
+            paint_interactive_chip(p, self, r, rad, press=1.0 if self.dragging else 0.0, nav=self.nav)
         else:
             p.fillPath(path, theme.track())
         v = clamp(self.shown.x, 0, 1)
@@ -823,7 +880,7 @@ class CCTile(Hoverable):
         if theme.liquid:
             r = self.card_rect()
             self.card_transform(p, r)
-            self.paint_card_bg(p, r, 22)
+            self.paint_card_bg(p, r, squircle_radius(r), nav=True)
         else:
             r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
             s = self.press_scale()
@@ -833,7 +890,8 @@ class CCTile(Hoverable):
             base = theme.card(1.0 + 0.5 * self._hover.x)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(base)
-            p.drawRoundedRect(r, 26, 26)
+            rad = squircle_radius(r)
+            p.drawRoundedRect(r, rad, rad)
 
         a = 1.0 if self.enabled_ else 0.45
         t = clamp(self.on_spring.x, 0.0, 1.0)
@@ -868,11 +926,17 @@ class CCTile(Hoverable):
 
         if self.sub:
             sr = self._menu_rect()
+            maxw = int(tw - (18 if self.has_menu else 2))
+            # 状态文字长度不固定（"已连接到 3 个设备"、很长的 Wi-Fi 名）：先按 12px 试，
+            # 放不下就逐档缩到 9px，实在还长才省略 —— 别一上来就截成"已连接…"。
             f = ui_font(12, W.DemiBold)
-            p.setFont(f)
             fm2 = QtGui.QFontMetrics(f)
-            sub = fm2.elidedText(self.sub, Qt.TextElideMode.ElideRight,
-                                 int(tw - (18 if self.has_menu else 2)))
+            px = 12
+            while px > 9 and fm2.horizontalAdvance(self.sub) > maxw:
+                px -= 1
+                f = ui_font(px, W.DemiBold)
+                fm2 = QtGui.QFontMetrics(f)
+            sub = fm2.elidedText(self.sub, Qt.TextElideMode.ElideRight, maxw)
             adv = fm2.horizontalAdvance(sub)
             if theme.liquid:
                 pass                     # 液态玻璃下不要底框：状态行只留文字 + ⌃⌄ 箭头
@@ -1005,25 +1069,36 @@ class Sparkline(QtWidgets.QWidget, Themed):
 
 
 class Card(QtWidgets.QFrame, Themed):
-    """轻卡片：极淡的白色圆角底（无描边、无分割线）。"""
-    def __init__(self, parent=None, radius: float = 18, alpha: float = 1.0):
+    """轻卡片：极淡的白色圆角底（无描边、无分割线）。
+
+    nav=True 时液态主题改用导航胶囊同款玻璃，圆角按短边 18%（squircle）。
+    """
+    def __init__(self, parent=None, radius: float = 18, alpha: float = 1.0, nav: bool = False):
         super().__init__(parent)
         self.radius = radius
         self.alpha = alpha
+        self.nav = nav
         self._hook_theme()
 
     def paintEvent(self, e):
         p = painter(self)
+        r = QtCore.QRectF(self.rect())
+        rad = squircle_radius(r) if self.nav else self.radius
         if theme.liquid:
-            paint_interactive_chip(p, self, QtCore.QRectF(self.rect()), self.radius)
+            paint_interactive_chip(p, self, r, rad, nav=self.nav)
             return
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(theme.card(self.alpha))
-        p.drawRoundedRect(QtCore.QRectF(self.rect()), self.radius, self.radius)
+        p.drawRoundedRect(r, rad, rad)
 
 
 class ScrollArea(QtWidgets.QScrollArea):
-    """透明滚动区，细滚动条。"""
+    """透明滚动区，细滚动条；滚轮走缓动动画（所有主题一致）。"""
+
+    _WHEEL_STEP = 52.0     # 一格滚轮的行程：设备行 44+6=50，略超一格，滚一次就整行进位
+    _WHEEL_DUR = 240       # 动画基准时长（ms）；距离越远按比例延长，上限 _WHEEL_DUR_MAX
+    _WHEEL_DUR_MAX = 320
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWidgetResizable(True)
@@ -1041,6 +1116,16 @@ class ScrollArea(QtWidgets.QScrollArea):
         theme.changed.connect(self._style_bar)
         self._style_bar()
 
+        # 滚轮平滑滚动：QScrollArea 默认是「一格 = 立即跳一格」，液态玻璃下面这种硬跳
+        # 和整个岛的缓动语言不搭。这里自己维护目标值 + OutCubic 补间，所有主题通用。
+        self._anim = QtCore.QVariantAnimation(self)
+        self._anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._on_smooth_value)
+        self._target = 0.0
+        # 一格滚轮的行程：默认 52；列表页可以按自己的行距改（44+6=50），滚一次正好一整行
+        self.row_step = self._WHEEL_STEP
+        self.verticalScrollBar().sliderPressed.connect(self._anim.stop)   # 手拖滚动条时不抢
+
     def _style_bar(self):
         c = theme.qss_color(theme.text(0.25))
         self.verticalScrollBar().setStyleSheet(
@@ -1048,6 +1133,46 @@ class ScrollArea(QtWidgets.QScrollArea):
             f"QScrollBar::handle:vertical{{background:{c};border-radius:3px;min-height:24px}}"
             "QScrollBar::add-line,QScrollBar::sub-line{height:0}"
             "QScrollBar::add-page,QScrollBar::sub-page{background:transparent}")
+
+    def _on_smooth_value(self, v: float):
+        self.verticalScrollBar().setValue(int(round(v)))
+
+    def smooth_to(self, target: float):
+        """滚到指定 scrollbar 值（带缓动）；外部想程序化滚动时也可以直接用。"""
+        bar = self.verticalScrollBar()
+        target = float(clamp(target, bar.minimum(), bar.maximum()))
+        if abs(target - bar.value()) < 0.5:
+            self._anim.stop()
+            bar.setValue(int(target))
+            return
+        self._target = target
+        dur = int(min(self._WHEEL_DUR_MAX, max(self._WHEEL_DUR * 0.6, abs(target - bar.value()) * 2.4)))
+        self._anim.stop()
+        self._anim.setDuration(dur)
+        self._anim.setStartValue(float(bar.value()))
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def wheelEvent(self, e):
+        bar = self.verticalScrollBar()
+        if bar.maximum() <= bar.minimum():
+            e.ignore()                     # 不能滚：交回外层（大岛自己还有别的滚轮语义）
+            return
+        # 动画中途再滚，要从「目标」接着加，否则连续滚动会打架、滚不动
+        cur = self._target if self._anim.state() == QtCore.QAbstractAnimation.State.Running else float(bar.value())
+        pd = e.pixelDelta().y()
+        ad = e.angleDelta().y()
+        # 滚轮 y 正 = 向上滚，滚动条的 value 要变小，所以统一取负
+        if pd:
+            step = -pd * 2.4              # 精密触控板：按像素给，短步长更跟手
+        elif ad:
+            step = -(ad / 120.0) * self.row_step
+        else:
+            e.ignore()
+            return
+        self.smooth_to(cur + step)
+        e.accept()
+
 
 
 def hbox(*items, spacing: int = 8, margins=(0, 0, 0, 0)) -> QtWidgets.QHBoxLayout:

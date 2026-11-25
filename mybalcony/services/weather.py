@@ -679,8 +679,12 @@ class WeatherService(QtCore.QObject):
     def _fetch_open_meteo(self, c: dict) -> dict:
         lat, lon = c.get("lat"), c.get("lon")
         if lat in (None, "") or lon in (None, ""):
-            g = self._geocode(c.get("q") or c.get("name") or "Shanghai")
+            q = c.get("q") or c.get("name") or "Shanghai"
+            g = self._geocode(q)
             if not g:
+                # Open-Meteo 的中文地名库并不全（"泉州"就查不到），退回 wttr.in 的地理编码
+                g = self._wttr_geocode(q)
+            if not g or g.get("lat") in (None, ""):
                 raise ValueError(f"找不到城市：{c.get('name')}")
             lat, lon = g["lat"], g["lon"]
         r = self._client.get(OM_API, params={

@@ -4,7 +4,7 @@ type: technical
 status: active
 title: Codebase Map
 created: '2026-11-21'
-updated: '2026-11-23'
+updated: '2026-11-25'
 tags:
 - technical
 - codebase
@@ -33,6 +33,12 @@ source_paths:
 - mybalcony/ui/pages/bluetooth.py
 - mybalcony/ui/pages/system.py
 - mybalcony/ui/pages/tools.py
+- mybalcony/ui/devicon.py
+- mybalcony/services/lyrics.py
+- mybalcony/services/netease_eapi.py
+- mybalcony/services/aes.py
+- mybalcony/services/lxsource.py
+- mybalcony/services/atkdev.py
 - requirements.txt
 confidence: confirmed
 ---
@@ -177,6 +183,33 @@ confidence: confirmed
   - Offscreen OpenGL refractor retained for fallback and CPU/GPU semantic comparisons.
 - `mybalcony/ui/liquid.py`, `widgets.py`, `nav.py`, and `theme.py`
   - Foreground liquid materials, interactive controls, navigation, and color roles.
+
+## Lyrics, Media And Peripherals
+
+- `mybalcony/services/lyrics.py`: lyric cascade `_fetch_lx` → `_fetch_netease` → `_fetch_lrclib`.
+  `parse_lrc_words()` returns `(lines, words)`; `Lyrics.words` holds a per-line list of
+  `(time, text)` segments parsed from inline `<mm:ss.mmm>` tags, and `Lyrics.progress()`
+  advances per segment when present, otherwise per line. `LyricsService` caches by
+  `song_id` or `title|artist`, treats an empty result as valid for `EMPTY_TTL` (240s), retries
+  failed keys from `_retry_tick()` every 6s after `FAIL_COOLDOWN` (60s), and logs failures as
+  `[lyrics] <key> 取词失败: <type>: <msg>`.
+- `mybalcony/services/netease_eapi.py`: LX Music's wy lyric source. POST to
+  `https://interface3.music.163.com/eapi/song/lyric/v1` with eapi params; `yrc_to_lrc()`
+  converts both yrc line forms (JSON header and `[start,dur](start,dur,0)word…`) into the
+  inline word-time LRC dialect; `yrc_to_plain()` strips word times for translations.
+  httpx is tried first, then system `curl.exe` (this machine resets direct TLS).
+- `mybalcony/services/aes.py`: pure-Python AES-128-ECB + PKCS#7, only used by the eapi
+  client (no crypto wheel is installable here). Verified with the FIPS-197 vector.
+- `mybalcony/services/lxsource.py`: read-only client for LX Music's local open API
+  (`media.lx_api`, default `http://127.0.0.1:23330`; `/status`, `/lyric-all`), 0.6s timeout,
+  25s down-cooldown. Only used when LX is playing the same track (`lx_same_song`).
+- `mybalcony/services/atkdev.py` + `mybalcony/ui/devicon.py`: peripheral model/icon lookup.
+  ATK devices are matched by VID `0x373B` plus PID (headset `0x1262` here); Razer mice by HID
+  usage/name keywords, instead of the generic USB-stick glyph.
+- Overlay readability: `widgets.backdrop_luminance(w)` and `widgets.glass_ink(w, a)` map a
+  widget's backdrop brightness to `LIGHT_INK` above `LIGHT_IN = 0.58` (back to white below
+  `0.46`). Liquid menus do the same through `liquid._lum_of()` + `_menu_scrim()` and flip
+  text, separator, hover highlight and arrow palette together.
 
 ## Change-Sensitive Invariants
 

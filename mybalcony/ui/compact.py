@@ -608,7 +608,9 @@ class CompactView:
         m = self.mode()
         fade = ease_out((time.monotonic() - self._mode_t) / 0.28)
         a = alpha * fade
-        self._peak = self._peak * 0.6 + peak * 0.4
+        # 上游（Island._pk）已经做过 attack/release 包络与自动增益，这里只做
+        # 极轻的下落保持，避免二次低通把峰值削平（那正是"跳不高"的原因之一）。
+        self._peak = max(peak, self._peak * 0.9)
         self._bar = self.bar_mode and not self.bar_open
         p.save()
         p.setClipRect(r.adjusted(6, 0, -6, 0), Qt.ClipOperation.IntersectClip)
@@ -848,11 +850,11 @@ class CompactView:
         bars_w = 26
         bx = pr.left() - 6 - bars_w
         t = time.monotonic()
-        pk = clamp(self._peak * 1.6, 0, 1)
+        pk = clamp(self._peak, 0, 1)
         for i in range(4):
-            target = 0.18 + pk * (0.55 + 0.45 * math.sin(t * (7.3 + i * 2.1) + i * 1.7) ** 2)
-            self._bars[i] += (target - self._bars[i]) * 0.35
-            h = 4 + 14 * self._bars[i]
+            target = 0.14 + pk * (0.52 + 0.48 * math.sin(t * (7.3 + i * 2.1) + i * 1.7) ** 2)
+            self._bars[i] += (target - self._bars[i]) * 0.4
+            h = 3 + 17 * clamp(self._bars[i], 0, 1)
             br = QtCore.QRectF(bx + i * 7, cy - h / 2, 3.6, h)
             c = theme.text(0.85 * a)
             p.setPen(Qt.PenStyle.NoPen)

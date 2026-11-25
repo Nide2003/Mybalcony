@@ -628,3 +628,34 @@ tint is the alternative. Real-machine look pending. No requirement IDs or new op
 introduced.
 
 Questions: No new open questions. Alerts: None captured.
+
+## [2026-11-25] update | WLOG-20261125-022 | Word-level lyrics, backdrop-aware menus, meter gain, click-only expansion
+
+Changed:
+
+- [changes/CHANGELOG.md](../changes/CHANGELOG.md) — added the 2026-11-25 and 2026-11-24 entries.
+- [STATUS.md](../STATUS.md) — Current Focus now records the LX/eapi lyric cascade, the
+  backdrop-aware ink, the lyric-meter gain, performance A and click-only expansion.
+- [technical/codebase-map.md](../technical/codebase-map.md) — new "Lyrics, Media And Peripherals"
+  section and the six new source paths.
+- [logs/INDEX.md](./INDEX.md) — W48 description extended.
+
+Summary: Automatic post-implementation synchronization covering this session's work. Lyrics no
+longer need LX Music installed: `services/netease_eapi.py` reuses LX's wy source
+(`POST interface3.music.163.com/eapi/song/lyric/v1`, AES-128-ECB key `e82ckenh8dichen8`,
+`"<url>-36cd479b6b5-<json>-36cd479b6b5-<md5>"`), with a pure-Python AES in `services/aes.py`
+(FIPS-197 verified) because no crypto wheel installs here; `services/lxsource.py` reads LX's local
+API when it is playing the same track. yrc's JSON-header and `[start,dur](start,dur,0)word…` forms
+are converted to the inline `<mm:ss.mmm>` dialect consumed by `parse_lrc_words()`, so the sweep
+advances per character. The "no lyrics for the whole track" bug was a permanently cached empty
+result: empty now expires after `EMPTY_TTL = 240s` and `_retry_tick()` re-fetches 6s after the 60s
+cooldown. Liquid menus became backdrop-aware (`_lum_of()` + `_menu_scrim()`, light backdrop ⇒
+`LIGHT_INK` + white stroke, `MENU_QSS` no longer sets `color`, which double-painted items through
+`QStyleSheetStyle`); measured text band min 21.7 on white / median 238.3 on black. The meter reads
+through `island._pk()` (attack instant, 0.30s release, 2.5s auto-gain) and compact busy states
+repaint at 11ms. `island.hover_expand_ms = 0` makes expansion click-only. Verified by pixel
+renders, a 6000-case state sweep, a fake LX HTTP server, live eapi probes (52/52 word-timed lines
+for 孤勇者 in 1128ms), a 2000-case lyric-cache sweep, and a relaunched `run.pyw` with no `[lyrics]`
+failure lines in the log.
+
+Questions: No new open questions. Alerts: None captured.

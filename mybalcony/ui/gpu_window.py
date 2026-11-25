@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtOpenGL
 
+from .glass import REFRACT_BAND_SCALE
 from .gpu_widget import _VERTEX, _FRAGMENT, SeparableBlur, center_blur_radius
 
 
@@ -75,9 +76,13 @@ class NativeGlassWindow(QtOpenGL.QOpenGLWindow):
 
     def sync_geometry(self):
         from .glass import _u32, WDA_EXCLUDEFROMCAPTURE
-        if not getattr(self, "_capture_excluded", False):
-            _u32.SetWindowDisplayAffinity(int(self.winId()), WDA_EXCLUDEFROMCAPTURE)
-            self._capture_excluded = True
+        from ..core.config import cfg
+        # 玻璃层默认排除在截图外（否则玻璃里会抓到自家上一帧）；
+        # island.capture_self=True 时解除，方便截图/录屏出图。
+        want = 0 if bool(cfg.get("island.capture_self", False)) else WDA_EXCLUDEFROMCAPTURE
+        if getattr(self, "_affinity", None) != want:
+            _u32.SetWindowDisplayAffinity(int(self.winId()), want)
+            self._affinity = want
         shape = self.island.path.boundingRect().translated(QtCore.QPointF(self.island._win_origin))
         rect = shape.toAlignedRect().adjusted(-2, -2, 2, 2)
         if rect != self.geometry():
@@ -135,7 +140,8 @@ class NativeGlassWindow(QtOpenGL.QOpenGLWindow):
         # 往内扩宽到约 2×：让折射/饱和/彩边在边框内铺得更开，最外沿仍钉在 sd=0 的边框上。
         thickness = min(12.0, max(2.0, min(hw, hh) * 0.30))
         GL.glUniform1f(self._uniform("thickness"), thickness)
-        GL.glUniform1f(self._uniform("bandWidth"), min(45.0, max(9.0, thickness * 3.6)))
+        GL.glUniform1f(self._uniform("bandWidth"),
+                       min(45.0, max(9.0, thickness * 3.6)) * REFRACT_BAND_SCALE)
         GL.glUniform1f(self._uniform("amplitude"), 1.2)
         GL.glUniform1f(self._uniform("dispersion"), 0.0)
         GL.glUniform1f(self._uniform("lensScale"), 1.0)

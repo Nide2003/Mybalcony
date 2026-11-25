@@ -7,10 +7,11 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ...core.bg import run_bg
 from ...core.config import cfg
 from .. import ccpanel
+from ..devicon import dev_glyph
 from ..anim import clamp
 from ..theme import G, W, icon_font, theme, ui_font
 from ..widgets import (Card, CCTile, Hoverable, IconButton, Label, PillButton, ScrollArea, Segmented, Slider,
-                       Sparkline, Themed, Tile, fmt_bytes, hbox, painter, vbox)
+                       Sparkline, Themed, Tile, fmt_bytes, glass_ink, hbox, painter, squircle_radius, vbox)
 from .base import Page
 
 Qt = QtCore.Qt
@@ -77,6 +78,97 @@ def styled_menu(parent=None) -> QtWidgets.QMenu:
 
 
 TILE = 118          # 控制中心方块磁贴的边长
+PAGE_PAD_V = 6      # 非液态主题页面上下留白（避免实心卡片被页面切边）
+STRIP_H = 84        # 电量圆环条的高度（塞在"顶栏胶囊大小"卡片下面）
+
+
+class BatteryRings(Hoverable):
+    """iOS 电池组件那排电量圆环：设备图标 + 进度环 + 百分比。
+
+    槽位固定 4 个，没数据的槽画一圈灰色空环占位，和截图里的空槽一致。
+    尺寸按右侧滑块列的宽度做的紧凑版。
+    """
+    SLOTS = 4
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.items: list[dict | None] = [None] * self.SLOTS
+        self.setFixedHeight(STRIP_H)
+        self.setMinimumWidth(140)
+
+    def set_items(self, items: list[dict]):
+        slots: list[dict | None] = [None] * self.SLOTS
+        for i, it in enumerate(items[: self.SLOTS]):
+            slots[i] = it
+        if slots != self.items:
+            self.items = slots
+            self.update()
+
+    def paintEvent(self, e):
+        p = painter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        r_card = QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        rad = squircle_radius(r_card)
+        # 背景与顶部导航胶囊同一套玻璃配方（强雾化 + 淡白 tint + 刃口描边）；
+        # 非液态主题保留二级菜单那块的皮肤。
+        if theme.liquid:
+            from ..liquid import paint_interactive_chip
+            paint_interactive_chip(p, self, r_card, rad, nav=True)
+        else:
+            p.setPen(QtGui.QPen(theme.rim_top(), 1))
+            p.setBrush(ccpanel._panel_brush(r_card))
+            p.drawRoundedRect(r_card, rad, rad)
+            g = QtGui.QLinearGradient(0, r_card.top(), 0, r_card.bottom())
+            g.setColorAt(0, QtGui.QColor(255, 255, 255, 26 if not theme.dark else 14))
+            g.setColorAt(0.5, QtGui.QColor(255, 255, 255, 0))
+            g.setColorAt(1, QtGui.QColor(255, 255, 255, 10))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(g)
+            p.drawRoundedRect(r_card, rad, rad)
+
+        r = QtCore.QRectF(self.rect())
+        cw = r.width() / self.SLOTS
+        d = 32.0
+        top = r.y() + 14
+        # 液态玻璃的 tint 近乎全透明：环内图标和百分比原来固定取 text()（白色），
+        # 壁纸偏亮时整排和玻璃糊成一片。glass_ink 按实际背景亮度在白字 / 深字之间切换。
+        ink = glass_ink(self, 0.92)
+        ink_num = glass_ink(self, 1.0)
+        track = glass_ink(self, 0.3) if theme.liquid else QtGui.QColor(255, 255, 255, 30)
+
+        for i, it in enumerate(self.items):
+            cx = r.x() + cw * (i + 0.5)
+            ring = QtCore.QRectF(cx - d / 2, top, d, d).adjusted(2, 2, -2, -2)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QtGui.QPen(track, 3.6))
+            p.drawEllipse(ring)
+            if it is None:
+                continue
+            pct = clamp(float(it.get("pct") or 0), 0.0, 100.0) / 100.0
+            p.setPen(QtGui.QPen(QtGui.QColor(52, 199, 89), 3.6))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            if pct > 0:
+                p.drawArc(ring, 90 * 16, -int(360 * pct) * 16)
+            p.setFont(icon_font(14))
+            p.setPen(ink)
+            p.drawText(QtCore.QRectF(cx - 15, top + 4, 30, 22),
+                       Qt.AlignmentFlag.AlignCenter, it.get("glyph") or G.BATTERY)
+            if it.get("charging"):
+                p.setFont(icon_font(8.5))
+                p.setPen(QtGui.QColor(52, 199, 89))
+                p.drawText(QtCore.QRectF(cx - 20, top - 7, 12, 12),
+                           Qt.AlignmentFlag.AlignCenter, G.BOLT)
+            p.setFont(ui_font(13.5, W.DemiBold, num=True))
+            tr = QtCore.QRectF(cx - 28, top + d + 3, 56, 18)
+            txt = f"{int(pct * 100)}%"
+            if theme.liquid:
+                # 百分比固定「白字黑边」：浅壁纸靠黑描边读出，深壁纸就是纯白；
+                # 环内图标则继续走自动反色，两者分工固定，不随壁纸一起整片翻色。
+                p.setPen(QtGui.QColor(255, 255, 255))
+                theme.outlined_text(p, tr, Qt.AlignmentFlag.AlignHCenter, txt)
+            else:
+                p.setPen(ink_num)
+                p.drawText(tr, Qt.AlignmentFlag.AlignHCenter, txt)
 
 
 class ControlsPage(Page):
@@ -84,21 +176,22 @@ class ControlsPage(Page):
 
     def __init__(self, ctx):
         super().__init__(ctx)
-        self.vol = Slider(G.VOLUME)
-        self.bri = Slider(G.SUN)
+        self.battery = BatteryRings()          # 顶部电量圆环条
+        self.vol = Slider(G.VOLUME, nav=True)
+        self.bri = Slider(G.SUN, nav=True)
         self.vol.moved.connect(self._set_vol)
         self.vol.icon_clicked.connect(lambda: ctx.audio.toggle_mute())
         self.bri.moved.connect(lambda v: ctx.brightness.set(None, round(v * 100)))
         # 顶栏胶囊大小：放在音量/亮度下面那块空白里，只缩放收起态
-        self.scale = Slider(G.MONITOR)
+        self.scale = Slider(G.MONITOR, nav=True)
         self.scale.moved.connect(self._scale_moved)
         self.scale.released.connect(self._scale_saved)
         s0 = clamp(float(cfg.get("island.scale", 1.0) or 1.0), 0.7, 1.3)
         self.scale.set_value((s0 - 0.7) / 0.6, animate=False)
         self.scale.label = f"{round(s0 * 100)}%"
-        self.scale_box = Card(radius=16)
+        self.scale_box = Card(radius=16, nav=True)
         self.scale_box.setLayout(vbox(
-            hbox(Label("顶栏胶囊大小", 12, W.DemiBold), None, spacing=6),
+            hbox(Label("balcony", 12, W.DemiBold), None, spacing=6),
             self.scale, spacing=6, margins=(12, 8, 12, 8)))
         self.wifi = CCTile(G.WIFI, "无线局域网", tint=QtGui.QColor(0, 122, 255))
         self.hotspot = CCTile(G.STREAM, "个人热点", tint=QtGui.QColor(52, 199, 89))
@@ -129,7 +222,7 @@ class ControlsPage(Page):
             grid.addWidget(t, i // 2, i % 2)
 
         # Clash 卡片
-        self.card = Card(radius=18)
+        self.card = Card(radius=18, nav=True)
         self.mode = Segmented([n for _, n in MODES])
         self.mode.setFixedWidth(168)
         self.mode.changed.connect(lambda i: ctx.clash.set_mode(MODES[i][0]))
@@ -142,7 +235,9 @@ class ControlsPage(Page):
         openv.clicked.connect(lambda: ctx.clash.open_app())
         self.card.setLayout(vbox(hbox(self.clash_state, None, self.speed, openv, spacing=6),
                                  hbox(self.mode, None, self.node, spacing=8), spacing=6, margins=(14, 10, 10, 10)))
-        sliders = vbox(self.vol, self.bri, self.scale_box, self.card, None, spacing=8)
+        # 右列总高必须 ≤ 宫格高（251）：34+34+73+84 + 4 段间距，原先 8px 间距总计 257 会溢出下沿。
+        # 间距收到 6px 正好 249，液态/其他主题都不会被页面切边。
+        sliders = vbox(self.vol, self.bri, self.scale_box, self.battery, self.card, None, spacing=6)
         for w in (self.card, self.proxy, self.tun):
             w.hide()
         # 宫格（4 个按钮）在左、3 条滑块在右；两列都定高到宫格高度，顶边/底边对齐，
@@ -155,11 +250,53 @@ class ControlsPage(Page):
         sliders_w.setFixedHeight(gw.height())
         self.setLayout(hbox(gw, (sliders_w, 1), spacing=10))
         self._sync_height()
+        # 电量条：本机电池 15s 刷一次，蓝牙设备跟着蓝牙服务的 updated 信号走
+        self._bat_timer = QtCore.QTimer(self)
+        self._bat_timer.setInterval(15_000)
+        self._bat_timer.timeout.connect(self._sync_battery)
+        ctx.bluetooth.updated.connect(lambda _d: self._sync_battery())
+        self._sync_battery()
+        theme.changed.connect(lambda *_: self._sync_height())   # 切主题后重新留白/改页高
+
+    def _sync_battery(self):
+        """顶部电量条的数据：本机电池排第一，后面跟已连接且读到电量的蓝牙设备。"""
+        from ...services.power import system_battery
+        items: list[dict] = []
+        sb = system_battery()
+        if sb.get("present") and sb.get("percent") is not None:
+            items.append({"pct": sb["percent"], "glyph": G.MONITOR, "charging": bool(sb.get("charging"))})
+        for d in (self.ctx.bluetooth.devices or []):
+            lv = d.get("battery")
+            if lv is None or not d.get("connected"):
+                continue
+            # 认得出型号就画设备本身的图标（耳机/鼠标/键盘），认不出才退回蓝牙/电池图标
+            glyph = dev_glyph(d) if d.get("type") else (G.BT if d.get("kind") != "ble" else G.BATTERY)
+            items.append({"pct": int(lv), "glyph": glyph, "charging": False})
+        self.battery.set_items(items)
+
+    def on_show(self):
+        super().on_show()
+        self._sync_battery()
+        self.ctx.bluetooth.refresh()          # 没扫过设备时补一次，电量条才有数
+        self._bat_timer.start()
+
+    def on_hide(self):
+        super().on_hide()
+        self._bat_timer.stop()
 
     def _sync_height(self):
-        """宫格是方块，页高得跟着行数走：两行（默认）或三行（Clash 在跑时多出代理两块）。"""
+        """宫格是方块，页高得跟着行数走：两行（默认）或三行（Clash 在跑时多出代理两块）。
+
+        非液态主题的卡片是实心白底，内容贴到页面上下沿会被裁掉一圈圆角，所以页高上下各留
+        PAGE_PAD_V；液态主题本身有卡片内缩，不需要额外留白。
+        """
         rows = 3 if self._clash.get("ok") else 2
-        self.set_height(rows * TILE + (rows - 1) * 15)
+        base = rows * TILE + (rows - 1) * 15
+        pad = 0 if theme.liquid else PAGE_PAD_V
+        self.set_height(base + pad * 2)
+        lay = self.layout()
+        if lay is not None:
+            lay.setContentsMargins(0, pad, 0, pad)
 
     def _toggle(self, kind: str):
         """可用就切换开关；检测不到（台式机没蓝牙 / 驱动不支持）时打开对应的系统设置页。"""
@@ -341,13 +478,20 @@ class ControlsPage(Page):
 
     def set_radio(self, d: dict):
         self._radio = d
-        self.wifi.set_state(bool(d.get("wifi_on")),
-                            (d.get("wifi_ssid") or ("已开启" if d.get("wifi_on") else "已关闭"))
-                            + (f" · {d['wifi_signal']}%" if d.get("wifi_signal") and d.get("wifi_ssid") else ""),
-                            d.get("wifi_available", True))
+        ssid = d.get("wifi_ssid") or ""
+        if d.get("wifi_on"):
+            sub = f"已连接 {ssid}" if ssid else "已开启"
+            if ssid and d.get("wifi_signal"):
+                sub += f" · {d['wifi_signal']}%"
+        else:
+            sub = "已关闭"
+        self.wifi.set_state(bool(d.get("wifi_on")), sub, d.get("wifi_available", True))
         bt_ok = d.get("bt_available", True)
-        self.bt.set_state(bool(d.get("bt_on")),
-                          ("已开启" if d.get("bt_on") else "已关闭") if bt_ok else "未检测到", bt_ok)
+        if not bt_ok:
+            bt_sub = "未检测到"
+        else:
+            bt_sub = "已开启" if d.get("bt_on") else "已关闭"
+        self.bt.set_state(bool(d.get("bt_on")), bt_sub, bt_ok)
         hs_ok = d.get("hotspot_available", False)
         if not hs_ok:
             hs_sub = "未检测到"

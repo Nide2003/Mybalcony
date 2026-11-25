@@ -15,7 +15,8 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..anim import clamp
 from ..theme import G, W, icon_font, theme, ui_font
-from ..widgets import IconButton, Label, ScrollArea, Themed, hbox, painter, vbox
+from ..widgets import IconButton, Label, ScrollArea, Themed, glass_ink, hbox, painter, vbox
+from ..devicon import dev_glyph
 from ...services.power import system_battery
 from .base import Page
 
@@ -98,9 +99,10 @@ class DeviceRow(QtWidgets.QWidget, Themed):
         p.setBrush(theme.card(1.6))
         p.drawEllipse(cr)
         p.setFont(icon_font(12))
-        p.setPen(theme.text(0.72 if dev.get("connected") else 0.32))
-        p.drawText(cr, Qt.AlignmentFlag.AlignCenter,
-                   G.USB if dev.get("kind") == "usb" else G.BT)
+        # 液态玻璃下圆底只有 42/255 的白，等于跟着壁纸走：白字形在浅壁纸上看不见。
+        # 用和电量圆环同一套 glass_ink，按背景亮度反色。
+        p.setPen(glass_ink(self, 0.72 if dev.get("connected") else 0.32))
+        p.drawText(cr, Qt.AlignmentFlag.AlignCenter, dev_glyph(dev))
 
         # 副标题：只写连接状态，不解释为什么没有电量（说明放在提示里或者干脆不写）
         battery = dev.get("battery")
@@ -225,7 +227,7 @@ class _EdgeFade(QtWidgets.QWidget):
     鼠标事件完全穿透（``WA_TransparentForMouseEvents``），不影响滚动 / 悬停 / tooltip。
     """
 
-    H = 10  # 淡出带高度（px）；必须小于 BatteryPage._BOTTOM_SPACER，滚到底时不擦最后卡片
+    H = 4  # 淡出带高度（px）；必须小于 BatteryPage._BOTTOM_SPACER(6)，滚到底时不擦最后卡片
 
     def __init__(self, parent: QtWidgets.QWidget):
         super().__init__(parent)
@@ -255,11 +257,16 @@ class _EdgeFade(QtWidgets.QWidget):
 
 
 class BatteryPage(Page):
-    key, glyph, title, height = "bat", G.BATTERY, "电量", 372
-    # 底部留白：滚到底时最后一张卡片下缘不与面板底边贴死，圆角不再被切平。
-    # 14px 实测即最后卡片下缘到视口底边的距离，大于 _EdgeFade.H=10，
-    # 因此淡出带只作用于留白区、不会擦到完整显示的最后一张卡片。
-    _BOTTOM_SPACER = 14
+    key, glyph, title, height = "bat", G.BATTERY, "电量", 252
+    _LIST_TOP = 102      # 列表区在页面里的起点，实测值（head 28 + spacing 8 + 本机卡 58 + spacing 8）
+    _VISIBLE_ROWS = 3    # 固定露出 3 行，其余靠滚动
+    _ROW_PITCH = int(DeviceRow.H) + 6          # 44 + 行间距 6 = 50：滚动步长按它走，整行进位
+    # 视口高度恰好 = 3 行 150px：第 4 行起点正好落在视口外，一行都不露，
+    # 且每次滚动 50px 后每屏仍是 3 整行，不会停在两行中间。
+    _VIEW_H = _VISIBLE_ROWS * _ROW_PITCH
+    # 内容层底部留白 6px：让总内容高成为 50 的整数倍（滚动终点也整行对齐），
+    # 同时滚到底时最后一张卡片下缘抬高 6px，圆角不被视口底切平。
+    _BOTTOM_SPACER = 6
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -281,6 +288,7 @@ class BatteryPage(Page):
         self.list_lay.addSpacing(self._BOTTOM_SPACER)
         self.list.setLayout(self.list_lay)
         self.scroll = ScrollArea()
+        self.scroll.row_step = self._ROW_PITCH      # 滚轮一格 = 一整行（44 + 6）
         self.scroll.setWidget(self.list)
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
@@ -316,6 +324,15 @@ class BatteryPage(Page):
         self._bat_timer.start()
 
     # ---------- 滚动底边淡出（纯视觉，不碰数据 / 定时器） ----------
+    def preferred_height(self) -> int:
+        """页高固定：列表区只给 3 行的位置，设备再多也不撑高，靠滚动看剩余的。
+
+        页高 = 列表起点 102 + 视口 150（正好 3 行 × 50）。设备 ≤3 个时
+        列表用 stretch 顶在上面，4 个起就滚动；滚轮步长锁 50px（整行 44+6），
+        所以每一次滚动都是整行进位，不会停在两行中间被切一刀。
+        """
+        return self._LIST_TOP + self._VIEW_H
+
     def _install_edge_fade(self) -> None:
         """在滚动视口底边叠一层淡出遮罩，随视口尺寸与滚动位置更新。
 
@@ -410,6 +427,8 @@ class BatteryPage(Page):
         if not n:
             self.empty.setText("没有找到蓝牙或 USB 设备。\n先在系统设置里配对，或确认蓝牙已打开。")
             self.stack.setCurrentIndex(1)
+            self.set_height(self.preferred_height())
             return
         self.stack.setCurrentIndex(0)
+        self.set_height(self.preferred_height())
 

@@ -11,7 +11,7 @@ from ...core.bg import launch
 from ...core.config import cfg, expand
 from ..anim import Spring, clamp
 from ..theme import KIND_COLORS, G, W, icon_font, theme, ui_font
-from ..widgets import (Card, Hoverable, IconButton, Label, PillButton, ScrollArea, Themed, fmt_time, hbox,
+from ..widgets import (Card, Hoverable, IconButton, Label, PillButton, ScrollArea, Themed, fmt_time, glass_ink, hbox,
                        painter, rounded_pixmap, vbox)
 from .base import Page
 
@@ -183,7 +183,7 @@ class CoverTitle(QtWidgets.QWidget):
             p.setBrush(theme.card(1.4))
             p.drawEllipse(rect)
             p.setFont(icon_font(max(12.0, rad * 0.9)))
-            p.setPen(theme.text(0.55))
+            p.setPen(glass_ink(self, 0.55))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, G.MUSIC)
         p.restore()
         # 盘面细边 + 中心孔：转起来才有"唱片"的实感，不然就是一张圆圈图片
@@ -253,6 +253,9 @@ class MediaCard(Card):
         self.prev = IconButton(G.PREV, 32, 14, "上一首")
         self.play = IconButton(G.PLAY, 38, 17, "播放 / 暂停", filled=True)
         self.next = IconButton(G.NEXT, 32, 14, "下一首")
+        # 液态玻璃下这三个按钮压在壁纸上（玻璃底很淡）：交给自动反色决定图标黑白
+        for b in (self.prev, self.play, self.next):
+            b.on_light = None
         self.open_btn = PillButton("打开网易云", G.MUSIC, height=28)
         self.prev.clicked.connect(lambda: ctx.media.prev())
         self.next.clicked.connect(lambda: ctx.media.next())
@@ -359,14 +362,17 @@ class Action(Hoverable):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(c)
             p.drawRoundedRect(r, 16, 16)
-        # 图标 + 文字：黑色粗体；开启态蓝色强调
-        col = theme.on_color() if self.on else theme.text(0.90)
+        # 图标 + 文字：黑色粗体；开启态蓝色强调。液态下图标跟着壁纸亮度反色，
+        # 否则白色字形压在亮玻璃上会淡掉；文字同理，深色时改用白描边。
+        col = theme.on_color() if self.on else glass_ink(self, 0.90)
         p.setFont(icon_font(17))
         p.setPen(col)
         p.drawText(QtCore.QRectF(r.x(), r.y() + 3, r.width(), 24), Qt.AlignmentFlag.AlignCenter, self.glyph)
         p.setFont(ui_font(11.5, W.DemiBold))
         p.setPen(col)
-        theme.outlined_text(p, QtCore.QRectF(r.x(), r.y() + 28, r.width(), 17), Qt.AlignmentFlag.AlignCenter, self.title)
+        edge = QtGui.QColor(255, 255, 255) if (theme.liquid and not self.on and col.lightness() < 150) else None
+        theme.outlined_text(p, QtCore.QRectF(r.x(), r.y() + 28, r.width(), 17), Qt.AlignmentFlag.AlignCenter,
+                            self.title, edge=edge)
 
 
 _icon_provider = None
@@ -457,8 +463,10 @@ class LaunchIcon(Hoverable):
             p.drawPixmap(ir.toRect(), self.pm)
         else:
             p.setFont(ui_font(15, W.Bold))
-            p.setPen(theme.text(0.8))
-            theme.outlined_text(p, r, Qt.AlignmentFlag.AlignCenter, (self.item.get("name") or "?")[:1])
+            col = glass_ink(self, 0.8)
+            p.setPen(col)
+            edge = QtGui.QColor(255, 255, 255) if (theme.liquid and col.lightness() < 150) else None
+            theme.outlined_text(p, r, Qt.AlignmentFlag.AlignCenter, (self.item.get("name") or "?")[:1], edge=edge)
 
 
 class PetWidget(QtWidgets.QWidget):
